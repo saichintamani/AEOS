@@ -1,0 +1,185 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aeos-api
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/name: aeos-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aeos
+    version: v1
+spec:
+  replicas: 3
+  # RollingUpdate: maxUnavailable=0 ensures zero downtime
+  # maxSurge=1 means temporarily 4 pods during rollout
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app: aeos-api
+
+  template:
+    metadata:
+      labels:
+        app: aeos-api
+        version: v1
+      annotations:
+        # Prometheus auto-scrape
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+        # Restarts pod when configmap changes (via rollout)
+        checksum/config: "{{ .Values.configChecksum }}"
+
+    spec:
+      serviceAccountName: aeos-api-sa
+      terminationGracePeriodSeconds: 60   # Allow in-flight requests to complete
+
+      # Spread pods across AZs for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [aeos-api]
+              topologyKey: topology.kubernetes.io/zone
+
+      # Prevent scheduling on GPU or memory-optimized nodes
+      nodeSelector:
+        workload-type: general
+
+      containers:
+      - name: api
+        image: REGISTRY_PLACEHOLDER/aeos-api:VERSION_PLACEHOLDER
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+
+        # Environment from ConfigMap (non-sensitive)
+        envFrom:
+        - configMapRef:
+            name: aeos-config
+
+        # Secrets injected individually (sensitive values)
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: aeos-db-secret
+              key: url
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aeos-auth-secret
+              key: jwt_secret_key
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aeos-external-secrets
+              key: openai_api_key
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        # Resource requests (K8s scheduler guarantee)
+        # Resource limits (hard cap; pod OOMKilled if exceeded)
+        resources:
+          requests:
+            cpu: 500m        # 0.5 vCPU guaranteed
+            memory: 1Gi
+          limits:
+            cpu: 2000m       # 2 vCPU max
+            memory: 2Gi
+
+        # Liveness: fast check, no DB queries (prevents cascading failures)
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Readiness: validates DB + Redis before receiving traffic
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 2
+          successThreshold: 1
+
+        # Startup: extra time for cold start (model loading)
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          failureThreshold: 30
+          periodSeconds: 2
+
+        # Security hardening
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: app-cache
+          mountPath: /app/.cache
+
+      # Init container: wait for DB to be ready before starting API
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          until nc -z ${DB_HOST} ${DB_PORT}; do
+            echo "Waiting for database..."; sleep 2
+          done
+          echo "Database ready"
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: aeos-db-secret
+              key: host
+        - name: DB_PORT
+          value: "5432"
+
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: app-cache
+        emptyDir:
+          sizeLimit: 500Mi
+
+      # Image pull secret for private ECR registry
+      imagePullSecrets:
+      - name: ecr-pull-secret

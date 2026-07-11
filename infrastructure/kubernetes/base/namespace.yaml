@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+    environment: production
+    team: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+    environment: production
+    team: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+    environment: production
+    team: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aeos-monitoring
+  labels:
+    app.kubernetes.io/part-of: aeos
+    environment: production
+    team: platform

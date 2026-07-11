@@ -1,0 +1,203 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## Prometheus Alert Rules — AEOS Production
+## Severity: critical (page immediately) | warning (ticket) | info (log)
+## ═══════════════════════════════════════════════════════════════════════════════
+
+groups:
+
+# ─── API / Application Alerts ──────────────────────────────────────────────────
+- name: aeos.api
+  rules:
+
+  - alert: APIDown
+    expr: up{job="aeos-api"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      team: platform
+    annotations:
+      summary: "AEOS API is down"
+      description: "API pod {{ $labels.pod }} has been down for > 1 minute"
+      runbook: "https://wiki.example.com/runbooks/api-down"
+
+  - alert: APIHighErrorRate
+    expr: |
+      (
+        rate(http_requests_total{job="aeos-api",status=~"5.."}[5m])
+        /
+        rate(http_requests_total{job="aeos-api"}[5m])
+      ) > 0.01
+    for: 2m
+    labels:
+      severity: critical
+      team: platform
+    annotations:
+      summary: "API error rate > 1%"
+      description: "Error rate: {{ $value | humanizePercentage }} over last 5 minutes"
+      runbook: "https://wiki.example.com/runbooks/high-error-rate"
+
+  - alert: APIHighLatencyP95
+    expr: |
+      histogram_quantile(0.95,
+        rate(http_request_duration_seconds_bucket{job="aeos-api"}[5m])
+      ) > 2
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "API p95 latency > 2 seconds"
+      description: "p95 latency: {{ $value | humanizeDuration }}"
+
+  - alert: APIHighLatencyP99
+    expr: |
+      histogram_quantile(0.99,
+        rate(http_request_duration_seconds_bucket{job="aeos-api"}[5m])
+      ) > 5
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "API p99 latency > 5 seconds"
+
+# ─── Kubernetes Alerts ─────────────────────────────────────────────────────────
+- name: aeos.kubernetes
+  rules:
+
+  - alert: PodCrashLooping
+    expr: |
+      increase(kube_pod_container_status_restarts_total{
+        namespace=~"aeos-.*"
+      }[1h]) > 5
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Pod {{ $labels.pod }} crash-looping"
+      description: "Pod has restarted {{ $value }} times in the last hour"
+
+  - alert: DeploymentReplicasMismatch
+    expr: |
+      kube_deployment_spec_replicas{namespace=~"aeos-.*"}
+      != kube_deployment_status_replicas_available{namespace=~"aeos-.*"}
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Deployment {{ $labels.deployment }} has fewer replicas than desired"
+
+  - alert: NodeNotReady
+    expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Kubernetes node {{ $labels.node }} is not ready"
+
+  - alert: NodeHighCPU
+    expr: |
+      100 - (avg by(node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Node {{ $labels.node }} CPU > 90%"
+
+  - alert: NodeDiskSpaceLow
+    expr: |
+      (node_filesystem_avail_bytes{mountpoint="/"} /
+       node_filesystem_size_bytes{mountpoint="/"}) < 0.15
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Node {{ $labels.instance }} disk space < 15%"
+
+  - alert: PVCStorageLow
+    expr: |
+      (kubelet_volume_stats_available_bytes /
+       kubelet_volume_stats_capacity_bytes) < 0.20
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "PVC {{ $labels.persistentvolumeclaim }} < 20% free"
+
+# ─── Queue / Worker Alerts ─────────────────────────────────────────────────────
+- name: aeos.workers
+  rules:
+
+  - alert: TaskQueueHighDepth
+    expr: aeos_queue_depth > 1000
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Task queue depth: {{ $value }}"
+      description: "Workers are backed up. Consider scaling."
+
+  - alert: TaskQueueCriticalDepth
+    expr: aeos_queue_depth > 10000
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Task queue critically backed up: {{ $value }} messages"
+
+  - alert: DeadLetterQueueGrowing
+    expr: increase(aeos_dlq_message_count[30m]) > 10
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Dead Letter Queue has {{ $value }} new failed messages"
+
+# ─── Database Alerts ────────────────────────────────────────────────────────────
+- name: aeos.database
+  rules:
+
+  - alert: DatabaseConnectionsHigh
+    expr: |
+      pg_stat_database_numbackends{datname="aeos"} /
+      pg_settings_max_connections > 0.80
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "PostgreSQL connections at {{ $value | humanizePercentage }} capacity"
+
+  - alert: DatabaseReplicationLag
+    expr: pg_replication_lag_seconds > 30
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "PostgreSQL replication lag: {{ $value }}s"
+
+  - alert: DatabaseDown
+    expr: up{job="postgres"} == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "PostgreSQL is down"
+
+# ─── Redis Alerts ───────────────────────────────────────────────────────────────
+- name: aeos.redis
+  rules:
+
+  - alert: RedisDown
+    expr: up{job="redis"} == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Redis is down"
+
+  - alert: RedisHighMemory
+    expr: |
+      redis_memory_used_bytes / redis_memory_max_bytes > 0.90
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Redis memory usage > 90%"

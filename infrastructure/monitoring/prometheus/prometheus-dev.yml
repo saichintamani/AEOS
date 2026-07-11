@@ -1,0 +1,49 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## Prometheus Configuration — AEOS Local Development (docker-compose)
+## Usage: docker-compose --profile monitoring up
+## Scrapes AEOS API, Redis, and Qdrant using static local addresses.
+## ═══════════════════════════════════════════════════════════════════════════════
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  scrape_timeout:      10s
+  external_labels:
+    cluster: aeos-local
+    env: development
+
+scrape_configs:
+
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+    - targets: [localhost:9090]
+
+  # ── AEOS API ───────────────────────────────────────────────────────────────
+  - job_name: aeos-api
+    static_configs:
+    - targets: [api:8000]
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # ── AEOS Worker nodes (cluster compose: node1, node2, node3) ───────────────
+  - job_name: aeos-cluster
+    static_configs:
+    - targets:
+      - aeos-node-1:8001
+      - aeos-node-2:8002
+      - aeos-node-3:8003
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  # Uses redis_exporter sidecar — enable with --profile dev-tools
+  - job_name: redis
+    static_configs:
+    - targets: [redis-exporter:9121]
+
+  # ── Qdrant vector store ────────────────────────────────────────────────────
+  - job_name: qdrant
+    static_configs:
+    - targets: [qdrant:6333]
+    metrics_path: /metrics

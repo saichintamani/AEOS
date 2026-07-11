@@ -1,0 +1,272 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## AEOS CI Pipeline
+## Triggers on: PR to main, push to main/develop
+## Stages: quality → test → security → build → scan
+## ═══════════════════════════════════════════════════════════════════════════════
+
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME: aeos-api
+
+# Limit concurrent CI runs per branch (save cost)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write        # OIDC for AWS auth (no static keys stored in secrets)
+  security-events: write # For uploading SARIF results
+
+jobs:
+
+  # ── Stage 1: Code Quality ────────────────────────────────────────────────────
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+
+    - name: Install dev dependencies
+      run: pip install -r requirements/dev.txt
+
+    - name: Ruff lint
+      run: ruff check . --output-format=github
+
+    - name: Ruff format check
+      run: ruff format . --check
+
+    - name: Mypy type checking
+      run: |
+        mypy app/ software_intelligence/ ml_platform/ \
+          --ignore-missing-imports \
+          --strict-optional \
+          --warn-return-any
+
+  # ── Stage 2: Unit + Integration Tests ───────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: aeos_test
+          POSTGRES_USER: aeos
+          POSTGRES_PASSWORD: testpassword
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+
+    - name: Install dependencies
+      run: pip install -r requirements/base.txt -r requirements/test.txt
+
+    - name: Run unit tests with coverage
+      run: |
+        pytest tests/unit/ \
+          -v --tb=short \
+          -x \
+          --cov=app \
+          --cov=software_intelligence \
+          --cov=ml_platform \
+          --cov-report=xml \
+          --cov-report=term-missing \
+          --cov-fail-under=80 \
+          --junit-xml=test-results/unit.xml
+      env:
+        DATABASE_URL: postgresql://aeos:testpassword@localhost:5432/aeos_test
+        REDIS_URL: redis://localhost:6379/0
+        ENVIRONMENT: test
+
+    - name: Run integration tests
+      run: |
+        pytest tests/integration/ \
+          -v --tb=short \
+          --junit-xml=test-results/integration.xml
+      env:
+        DATABASE_URL: postgresql://aeos:testpassword@localhost:5432/aeos_test
+        REDIS_URL: redis://localhost:6379/0
+        ENVIRONMENT: test
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results
+        path: test-results/
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: coverage.xml
+        fail_ci_if_error: false
+
+  # ── Stage 3: Security Scanning ───────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+
+    - name: Install security tools
+      run: pip install bandit safety
+
+    - name: Bandit SAST — Python source
+      run: |
+        bandit -r app/ software_intelligence/ ml_platform/ \
+          -f json -o bandit-report.json \
+          -ll \
+          --exit-zero
+      # -ll = HIGH and CRITICAL only
+
+    - name: Safety — dependency CVE check
+      run: |
+        safety check \
+          -r requirements/base.txt \
+          -r requirements/prod.txt \
+          --json \
+          --output safety-report.json \
+          --continue-on-error
+
+    - name: Semgrep SAST
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >
+          p/python
+          p/owasp-top-ten
+          p/secrets
+      env:
+        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+    - name: Upload security artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+
+  # ── Stage 4: Container Build & Scan ─────────────────────────────────────────
+  build:
+    name: Build & Scan Image
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    timeout-minutes: 30
+    if: github.event_name == 'push'  # Only on push, not PR
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials (OIDC — no static keys)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
+        aws-region: us-east-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push API image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: infrastructure/docker/Dockerfile.api
+        target: production
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+        # GitHub Actions cache for faster rebuilds
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          VERSION=${{ github.sha }}
+          BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+    - name: Build and push Worker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: infrastructure/docker/Dockerfile.worker
+        target: production
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/aeos-worker:${{ github.sha }}
+          ${{ env.REGISTRY }}/aeos-worker:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Trivy image scan — API
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        format: sarif
+        output: trivy-api.sarif
+        severity: CRITICAL,HIGH
+        exit-code: 1     # Fail build on HIGH/CRITICAL CVEs
+
+    - name: Upload Trivy SARIF to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: trivy-api.sarif
+
+    outputs:
+      api-image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      worker-image: ${{ env.REGISTRY }}/aeos-worker:${{ github.sha }}

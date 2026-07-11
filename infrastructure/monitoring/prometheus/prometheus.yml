@@ -1,0 +1,101 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## Prometheus Configuration — AEOS Production
+## Scrapes: API pods, workers, node-exporter, kube-state-metrics, Redis, Postgres
+## ═══════════════════════════════════════════════════════════════════════════════
+
+global:
+  scrape_interval:     15s   # Default scrape interval
+  evaluation_interval: 15s   # Rule evaluation interval
+  scrape_timeout:      10s
+  external_labels:
+    cluster: aeos-production
+    region: us-east-1
+
+# Rules and alerts
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Alertmanager targets
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets: [alertmanager:9093]
+
+scrape_configs:
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+    - targets: [localhost:9090]
+
+  # ── AEOS API pods (Kubernetes service discovery) ───────────────────────────
+  - job_name: aeos-api
+    kubernetes_sd_configs:
+    - role: pod
+      namespaces:
+        names: [aeos-api]
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+      action: keep
+      regex: "true"
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+      action: replace
+      target_label: __metrics_path__
+      regex: (.+)
+    - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+      action: replace
+      regex: ([^:]+)(?::\d+)?;(\d+)
+      replacement: $1:$2
+      target_label: __address__
+    - source_labels: [__meta_kubernetes_pod_name]
+      target_label: pod
+    - source_labels: [__meta_kubernetes_namespace]
+      target_label: namespace
+
+  # ── AEOS Workers ───────────────────────────────────────────────────────────
+  - job_name: aeos-workers
+    kubernetes_sd_configs:
+    - role: pod
+      namespaces:
+        names: [aeos-jobs]
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+      action: keep
+      regex: "true"
+
+  # ── Node Exporter (host-level metrics) ────────────────────────────────────
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+    - role: node
+    relabel_configs:
+    - action: labelmap
+      regex: __meta_kubernetes_node_label_(.+)
+    - source_labels: [__address__]
+      action: replace
+      regex: ([^:]+)(?::\d+)?
+      replacement: $1:9100
+      target_label: __address__
+
+  # ── Kube State Metrics ─────────────────────────────────────────────────────
+  - job_name: kube-state-metrics
+    static_configs:
+    - targets: [kube-state-metrics.kube-system.svc.cluster.local:8080]
+
+  # ── Redis Exporter ─────────────────────────────────────────────────────────
+  - job_name: redis
+    static_configs:
+    - targets: [redis-exporter.aeos-data.svc.cluster.local:9121]
+    relabel_configs:
+    - source_labels: [__address__]
+      target_label: instance
+
+  # ── Postgres Exporter ──────────────────────────────────────────────────────
+  - job_name: postgres
+    static_configs:
+    - targets: [postgres-exporter.aeos-data.svc.cluster.local:9187]
+
+  # ── Qdrant metrics ─────────────────────────────────────────────────────────
+  - job_name: qdrant
+    static_configs:
+    - targets: [aeos-qdrant.aeos-data.svc.cluster.local:6333]
+    metrics_path: /metrics

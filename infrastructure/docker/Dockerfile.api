@@ -1,0 +1,115 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.api — AEOS FastAPI Service
+# Multi-stage build: builder (compile deps) → production (minimal runtime)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── Stage 1: Python base ─────────────────────────────────────────────────────
+FROM python:3.11-slim-bookworm AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# ─── Stage 2: Builder (compile Python dependencies) ───────────────────────────
+FROM base AS builder
+
+WORKDIR /build
+
+# Build-time system dependencies (discarded after this stage)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    libpq-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies to user-local prefix
+COPY requirements/base.txt requirements/prod.txt ./
+RUN pip install --user --no-warn-script-location \
+    -r base.txt \
+    -r prod.txt
+
+# ─── Stage 3: Development image (hot-reload, debug tools) ─────────────────────
+FROM base AS development
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    vim \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/base.txt requirements/dev.txt ./
+RUN pip install -r base.txt -r dev.txt
+
+# Mount code as volume in docker-compose for hot-reload
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--reload", \
+     "--log-level", "debug"]
+
+# ─── Stage 4: Production image (minimal, non-root, read-only FS) ──────────────
+FROM base AS production
+
+ARG VERSION=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="AEOS API" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/your-org/aeos"
+
+WORKDIR /app
+
+# Runtime-only system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user
+RUN groupadd -r -g 1000 aeos \
+    && useradd -r -u 1000 -g aeos -s /sbin/nologin aeos
+
+# Copy compiled Python packages from builder
+COPY --from=builder --chown=aeos:aeos /root/.local /home/aeos/.local
+
+# Copy application source code
+COPY --chown=aeos:aeos app/ ./app/
+COPY --chown=aeos:aeos software_intelligence/ ./software_intelligence/
+COPY --chown=aeos:aeos ml_platform/ ./ml_platform/
+
+# Create writable directories (root FS will be read-only in K8s)
+RUN mkdir -p /tmp /app/.cache \
+    && chown -R aeos:aeos /tmp /app/.cache
+
+USER aeos
+
+ENV PATH="/home/aeos/.local/bin:${PATH}" \
+    VERSION="${VERSION}" \
+    ENVIRONMENT="production"
+
+EXPOSE 8000
+
+# Liveness probe endpoint: /health (fast, no DB check)
+# Readiness probe endpoint: /health/ready (validates DB + Redis)
+HEALTHCHECK --interval=30s \
+            --timeout=5s \
+            --start-period=40s \
+            --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# 4 uvicorn workers for a 2-vCPU pod (2 * CPU + 1 formula)
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "4", \
+     "--no-access-log"]

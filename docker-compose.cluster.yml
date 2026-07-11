@@ -1,0 +1,200 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## AEOS — 3-Node Distributed Cluster (Phase 9B.6 Priority 2)
+##
+## Brings up a 3-node AEOS cluster with:
+##   - Shared Redis (Raft leader election, leases, membership, checkpoints)
+##   - Node-to-node Raft communication over internal Docker network
+##   - Each node exposes its own API port (8001, 8002, 8003)
+##   - Optional monitoring stack via --profile monitoring
+##
+## Usage:
+##   Start cluster:       docker-compose -f docker-compose.cluster.yml up
+##   With monitoring:     docker-compose -f docker-compose.cluster.yml --profile monitoring up
+##   Tear down:           docker-compose -f docker-compose.cluster.yml down -v
+##   Scale to 5 nodes:    add aeos-node-4 and aeos-node-5 following the same pattern
+##
+## Ports:
+##   aeos-node-1 API  → localhost:8001
+##   aeos-node-2 API  → localhost:8002
+##   aeos-node-3 API  → localhost:8003
+##   Redis            → localhost:6380  (non-conflicting with dev port 6379)
+##   Prometheus       → localhost:9091  (profile: monitoring)
+##   Grafana          → localhost:3002  (profile: monitoring)
+##   Jaeger           → localhost:16687 (profile: monitoring)
+## ═══════════════════════════════════════════════════════════════════════════════
+
+version: '3.9'
+
+# ── Shared node environment ────────────────────────────────────────────────────
+x-node-env: &node-env
+  PYTHONUNBUFFERED: "1"
+  ENVIRONMENT: cluster
+  REDIS_URL: redis://cluster-redis:6379/0
+  LOG_LEVEL: INFO
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://cluster-jaeger:4317"
+  # Raft cluster seed: all 3 nodes know each other at startup
+  AEOS_CLUSTER_NODES: "aeos-node-1:8001,aeos-node-2:8002,aeos-node-3:8003"
+  AEOS_CLUSTER_MODE: "true"
+  MEMORY_MAX_LONG_TERM: "2000"
+  MESSAGE_BUS_MAX_QUEUE: "1000"
+
+x-node-base: &node-base
+  build:
+    context: .
+    dockerfile: infrastructure/docker/Dockerfile.api
+    target: production
+  volumes:
+    - .:/app
+  environment:
+    <<: *node-env
+  depends_on:
+    cluster-redis:
+      condition: service_healthy
+  networks:
+    - cluster-network
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+    start_period: 30s
+
+services:
+
+  # ── Redis (shared coordination layer) ────────────────────────────────────────
+  cluster-redis:
+    image: redis:7-alpine
+    container_name: aeos-cluster-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    volumes:
+      - cluster-redis-data:/data
+    ports:
+      - "6380:6379"
+    networks:
+      - cluster-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── AEOS Node 1 (initial Raft candidate) ─────────────────────────────────────
+  aeos-node-1:
+    <<: *node-base
+    container_name: aeos-cluster-node-1
+    ports:
+      - "8001:8000"
+    environment:
+      <<: *node-env
+      AEOS_NODE_ID: "node-1"
+      AEOS_NODE_ADDR: "aeos-node-1:8000"
+
+  # ── AEOS Node 2 ───────────────────────────────────────────────────────────────
+  aeos-node-2:
+    <<: *node-base
+    container_name: aeos-cluster-node-2
+    ports:
+      - "8002:8000"
+    environment:
+      <<: *node-env
+      AEOS_NODE_ID: "node-2"
+      AEOS_NODE_ADDR: "aeos-node-2:8000"
+    depends_on:
+      cluster-redis:
+        condition: service_healthy
+      aeos-node-1:
+        condition: service_healthy
+
+  # ── AEOS Node 3 ───────────────────────────────────────────────────────────────
+  aeos-node-3:
+    <<: *node-base
+    container_name: aeos-cluster-node-3
+    ports:
+      - "8003:8000"
+    environment:
+      <<: *node-env
+      AEOS_NODE_ID: "node-3"
+      AEOS_NODE_ADDR: "aeos-node-3:8000"
+    depends_on:
+      cluster-redis:
+        condition: service_healthy
+      aeos-node-1:
+        condition: service_healthy
+
+  # ── Prometheus (monitoring profile) ──────────────────────────────────────────
+  cluster-prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: aeos-cluster-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus-dev.yml:/etc/prometheus/prometheus.yml:ro
+      - cluster-prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    networks:
+      - cluster-network
+    profiles: [monitoring]
+    restart: unless-stopped
+
+  # ── Grafana (monitoring profile) ──────────────────────────────────────────────
+  cluster-grafana:
+    image: grafana/grafana:10.2.2
+    container_name: aeos-cluster-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./infrastructure/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infrastructure/monitoring/grafana/provisioning-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - cluster-grafana-data:/var/lib/grafana
+    ports:
+      - "3002:3000"
+    depends_on:
+      - cluster-prometheus
+    networks:
+      - cluster-network
+    profiles: [monitoring]
+    restart: unless-stopped
+
+  # ── Jaeger (monitoring profile) ───────────────────────────────────────────────
+  cluster-jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: aeos-cluster-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16687:16686"   # Jaeger UI (non-conflicting)
+      - "4319:4317"     # OTLP gRPC (non-conflicting)
+      - "4320:4318"     # OTLP HTTP
+    networks:
+      - cluster-network
+    profiles: [monitoring]
+    restart: unless-stopped
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  cluster-redis-data:
+    driver: local
+  cluster-prometheus-data:
+    driver: local
+  cluster-grafana-data:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────────────────────
+networks:
+  cluster-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16

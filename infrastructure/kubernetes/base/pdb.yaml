@@ -1,0 +1,24 @@
+## PodDisruptionBudget: API — always keep at least 2 healthy pods
+## Prevents K8s from draining both pods simultaneously during node maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aeos-api-pdb
+  namespace: aeos-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: aeos-api
+---
+## PodDisruptionBudget: Workers — allow rolling drain (1 at a time)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aeos-worker-pdb
+  namespace: aeos-jobs
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: aeos-worker

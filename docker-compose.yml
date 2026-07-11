@@ -1,0 +1,250 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## AEOS — Local Development Docker Compose
+## Usage: make dev  OR  docker-compose up
+## Profiles:
+##   default       → api, worker, postgres, redis, qdrant
+##   --profile monitoring → + prometheus, grafana, jaeger
+##   --profile dev-tools  → + mailhog, flower
+## ═══════════════════════════════════════════════════════════════════════════════
+
+version: '3.9'
+
+x-common-env: &common-env
+  PYTHONUNBUFFERED: "1"
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql://aeos:devpassword@postgres:5432/aeos
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  QDRANT_URL: http://qdrant:6333
+  CHROMA_HOST: qdrant
+  CHROMA_PORT: "6333"
+  LOG_LEVEL: DEBUG
+  OTEL_ENABLED: "false"
+  DEBUG: "true"
+  MEMORY_MAX_LONG_TERM: "1000"
+  MESSAGE_BUS_MAX_QUEUE: "500"
+
+services:
+
+  # ── FastAPI Application ──────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+      target: development
+    container_name: aeos-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - pip-cache:/root/.cache/pip
+      - ./data:/app/data
+    environment:
+      <<: *common-env
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - aeos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Background Worker (Celery) ───────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+      target: production
+    container_name: aeos-worker
+    volumes:
+      - .:/app
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aeos-network
+    restart: unless-stopped
+
+  # ── Celery Beat Scheduler ────────────────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+      target: production
+    container_name: aeos-beat
+    command: celery -A app.workers beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - .:/app
+    environment:
+      <<: *common-env
+    depends_on:
+      - redis
+    networks:
+      - aeos-network
+    restart: unless-stopped
+
+  # ── Celery Flower (Task Monitor) ─────────────────────────────────────────────
+  flower:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+      target: production
+    container_name: aeos-flower
+    command: celery -A app.workers flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      <<: *common-env
+    depends_on:
+      - redis
+    networks:
+      - aeos-network
+    profiles: [dev-tools]
+
+  # ── PostgreSQL Database ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: aeos-postgres
+    environment:
+      POSTGRES_DB: aeos
+      POSTGRES_USER: aeos
+      POSTGRES_PASSWORD: devpassword
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - aeos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aeos -d aeos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ── Redis Cache / Broker ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: aeos-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - aeos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Qdrant Vector Database (replaces ChromaDB for production) ────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: aeos-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - aeos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Prometheus Metrics ───────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: aeos-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - aeos-network
+    profiles: [monitoring]
+
+  # ── Grafana Dashboards ───────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: aeos-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./infrastructure/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - aeos-network
+    profiles: [monitoring]
+
+  # ── Jaeger Tracing ───────────────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: aeos-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    networks:
+      - aeos-network
+    profiles: [monitoring]
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  qdrant-data:
+    driver: local
+  pip-cache:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  chroma_data:
+    driver: local
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  aeos-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

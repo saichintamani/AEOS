@@ -1,0 +1,20 @@
+{
+  "model_id": "66c5ace0",
+  "name": "integration-test-model",
+  "algorithm": "random_forest",
+  "dataset_id": "686c000814ec6ce0",
+  "metrics": {
+    "task_type": "classification",
+    "accuracy": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+  },
+  "feature_names": [
+    "x1",
+    "x2"
+  ],
+  "created_at": "2026-06-27T16:02:34.807372+00:00",
+  "model_path": "data\\model_registry\\66c5ace0.pkl",
+  "meta_path": "data\\model_registry\\66c5ace0_meta.json"
+}

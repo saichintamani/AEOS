@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.worker — AEOS Background Worker (Celery)
+# Handles: OSIP repository analysis, RAG ingestion, report generation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.11-slim-bookworm AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app \
+    C_FORCE_ROOT=0
+
+# ─── Builder ──────────────────────────────────────────────────────────────────
+FROM base AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make libpq-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/base.txt requirements/prod.txt requirements/worker.txt ./
+RUN pip install --user --no-warn-script-location \
+    -r base.txt -r prod.txt -r worker.txt
+
+# ─── Production ───────────────────────────────────────────────────────────────
+FROM base AS production
+
+ARG VERSION=unknown
+LABEL org.opencontainers.image.title="AEOS Worker"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r -g 1000 aeos \
+    && useradd -r -u 1000 -g aeos -s /sbin/nologin aeos
+
+COPY --from=builder --chown=aeos:aeos /root/.local /home/aeos/.local
+COPY --chown=aeos:aeos app/ ./app/
+COPY --chown=aeos:aeos software_intelligence/ ./software_intelligence/
+COPY --chown=aeos:aeos ml_platform/ ./ml_platform/
+
+RUN mkdir -p /tmp /app/.cache \
+    && chown -R aeos:aeos /tmp /app/.cache
+
+USER aeos
+
+ENV PATH="/home/aeos/.local/bin:${PATH}"
+
+# Health: verify Celery worker can respond to ping
+HEALTHCHECK --interval=60s \
+            --timeout=10s \
+            --start-period=30s \
+            --retries=3 \
+    CMD celery -A app.workers inspect ping --destination "celery@$HOSTNAME" || exit 1
+
+# --max-tasks-per-child: restart worker process after 100 tasks (prevent memory leaks)
+# --concurrency 4: 4 parallel tasks per worker pod (I/O bound)
+CMD ["celery", \
+     "-A", "app.workers", \
+     "worker", \
+     "--loglevel=info", \
+     "--concurrency=4", \
+     "--max-tasks-per-child=100", \
+     "--queues=default,osip,rag,reports"]
