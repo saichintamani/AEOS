@@ -28,13 +28,14 @@ import hashlib
 import time
 from datetime import datetime, timezone
 
-from app.rag.schemas import Document, ContextPackage, IngestStats
+from app.rag.schemas import Document, ContextPackage, IngestStats, AnswerResult
 from app.rag.exceptions import PipelineError, LoaderError, EmbeddingError, VectorStoreError
 from app.rag.loader import DocumentLoaderRegistry, loader_registry as _default_loader_registry
 from app.rag.chunker import BaseChunker, SemanticChunker
 from app.rag.embeddings import EmbeddingService, get_embedding_service
 from app.rag.vector_store import VectorStore
 from app.rag.retriever import RetrievalPipeline, RetrievedDocument
+from app.rag.generator import AnswerGenerator, get_generator
 from app.core.config import settings
 from app.core.logger import get_logger
 
@@ -67,12 +68,14 @@ class KnowledgePipeline:
         chunker: BaseChunker | None = None,
         embedding_service: EmbeddingService | None = None,
         vector_store: VectorStore | None = None,
+        generator: AnswerGenerator | None = None,
     ) -> None:
         self._namespace = namespace
         self._loader_registry = loader_registry or _default_loader_registry
         self._chunker = chunker or SemanticChunker()
         self._embedding_service = embedding_service or get_embedding_service()
         self._vector_store = vector_store or VectorStore(namespace=namespace)
+        self._generator = generator or get_generator()
         self._retrieval_pipeline = RetrievalPipeline(
             vector_store=self._vector_store,
             embedding_service=self._embedding_service,
@@ -292,6 +295,31 @@ class KnowledgePipeline:
             )
             for r in pkg.results
         ]
+
+    def answer(
+        self,
+        query: str,
+        top_k: int | None = None,
+        filters: dict | None = None,
+    ) -> AnswerResult:
+        """
+        Full RAG: retrieve context, then generate a grounded answer with inline
+        citations. This is the "G" in RAG — retrieve_context() only returns
+        chunks; answer() synthesizes a response traceable to its sources.
+
+        Uses the injected AnswerGenerator (offline ExtractiveGenerator by
+        default; OpenAIGenerator when OPENAI_API_KEY is configured).
+        """
+        if not query or not query.strip():
+            raise PipelineError("Query cannot be empty.")
+        pkg = self.retrieve_context(query=query, top_k=top_k, filters=filters)
+        try:
+            return self._generator.generate(query, pkg)
+        except Exception as exc:
+            raise PipelineError(
+                f"Answer generation failed: {exc}",
+                {"query": query[:80]},
+            ) from exc
 
     # ── Knowledge base management ──────────────────────────────────────────────
 

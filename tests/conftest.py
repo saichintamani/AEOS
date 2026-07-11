@@ -70,7 +70,11 @@ def ml_inline_data():
 
 @pytest.fixture
 def rag_engine():
-    from app.rag.rag_engine import RAGEngine
-    engine = RAGEngine(namespace="test_isolated")
+    # get_rag_engine() builds the KnowledgePipeline and wraps it in the RAGEngine
+    # facade. RAGEngine.__init__ takes a pipeline, not a namespace, so construct
+    # via the factory rather than instantiating RAGEngine directly.
+    from app.rag.rag_engine import get_rag_engine
+    engine = get_rag_engine("test_isolated")
+    engine.reset()  # ensure a clean store even if a prior run persisted data
     yield engine
     engine.reset()

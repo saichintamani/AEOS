@@ -22,13 +22,17 @@ Custom backend injection (testing / alternate provider):
 """
 from __future__ import annotations
 
+import json
+import shutil
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from app.rag.schemas import Chunk
 from app.rag.exceptions import VectorStoreError
+from app.rag.security import validate_namespace
 from app.core.config import settings
 from app.core.logger import get_logger
 
@@ -95,16 +99,78 @@ class NumpyVectorStore(VectorStoreInterface):
     - Zero external dependencies
     - Starts instantly (no service needed)
     - O(n) query — fast for <100k chunks, acceptable up to ~500k
-    - Not persistent: data lost on process restart
+    - Optionally persistent: when `persist_dir` is given, the store is loaded on
+      construction and re-saved after every mutation, so ingested documents
+      survive a process restart.
+
+    Persistence format (safe — no pickle):
+        <persist_dir>/vectors.npz   numpy float32 matrix (allow_pickle=False)
+        <persist_dir>/meta.json     ids, documents, metadatas
 
     Use for: development, unit tests, single-process deployments.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persist_dir: str | Path | None = None) -> None:
         self._ids: list[str] = []
         self._vectors: list[list[float]] = []
         self._documents: list[str] = []
         self._metadatas: list[dict] = []
+        self._persist_dir: Path | None = Path(persist_dir) if persist_dir else None
+        if self._persist_dir is not None:
+            self._load()
+
+    # ── Persistence ──────────────────────────────────────────────────────────
+    @property
+    def _npz_path(self) -> Path:
+        return self._persist_dir / "vectors.npz"  # type: ignore[operator]
+
+    @property
+    def _meta_path(self) -> Path:
+        return self._persist_dir / "meta.json"  # type: ignore[operator]
+
+    def _load(self) -> None:
+        if self._persist_dir is None or not self._npz_path.exists() or not self._meta_path.exists():
+            return
+        try:
+            with np.load(self._npz_path, allow_pickle=False) as data:
+                self._vectors = data["vectors"].tolist()
+            meta = json.loads(self._meta_path.read_text(encoding="utf-8"))
+            self._ids = meta.get("ids", [])
+            self._documents = meta.get("documents", [])
+            self._metadatas = meta.get("metadatas", [])
+            log.info(
+                "NumpyVectorStore loaded from disk",
+                extra={"ctx_dir": str(self._persist_dir), "ctx_count": len(self._ids)},
+            )
+        except Exception as exc:  # corrupt/partial file — start empty rather than crash
+            log.warning(
+                "NumpyVectorStore load failed; starting empty",
+                extra={"ctx_dir": str(self._persist_dir), "ctx_error": str(exc)},
+            )
+            self._ids, self._vectors, self._documents, self._metadatas = [], [], [], []
+
+    def _save(self) -> None:
+        if self._persist_dir is None:
+            return
+        try:
+            self._persist_dir.mkdir(parents=True, exist_ok=True)
+            vecs = (
+                np.array(self._vectors, dtype=np.float32)
+                if self._vectors
+                else np.zeros((0, 0), dtype=np.float32)
+            )
+            np.savez_compressed(self._npz_path, vectors=vecs)
+            self._meta_path.write_text(
+                json.dumps(
+                    {"ids": self._ids, "documents": self._documents, "metadatas": self._metadatas}
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # persistence must never break an ingest
+            log.warning(
+                "NumpyVectorStore save failed (data kept in memory)",
+                extra={"ctx_dir": str(self._persist_dir), "ctx_error": str(exc)},
+            )
 
     def add(
         self,
@@ -117,6 +183,7 @@ class NumpyVectorStore(VectorStoreInterface):
         self._vectors.extend(embeddings)
         self._documents.extend(documents)
         self._metadatas.extend(metadatas)
+        self._save()
 
     def query(self, query_embedding: list[float], n_results: int) -> dict[str, list]:
         if not self._vectors:
@@ -151,6 +218,7 @@ class NumpyVectorStore(VectorStoreInterface):
         self._vectors   = [self._vectors[i]   for i in keep]
         self._documents = [self._documents[i] for i in keep]
         self._metadatas = [self._metadatas[i] for i in keep]
+        self._save()
 
     def count(self) -> int:
         return len(self._ids)
@@ -160,6 +228,16 @@ class NumpyVectorStore(VectorStoreInterface):
         self._vectors.clear()
         self._documents.clear()
         self._metadatas.clear()
+        # Remove persisted files entirely so a re-run starts genuinely clean
+        # (avoids stale data leaking across test runs / restarts).
+        if self._persist_dir is not None and self._persist_dir.exists():
+            try:
+                shutil.rmtree(self._persist_dir)
+            except Exception as exc:
+                log.warning(
+                    "NumpyVectorStore reset could not remove persist dir",
+                    extra={"ctx_dir": str(self._persist_dir), "ctx_error": str(exc)},
+                )
 
 
 # ── ChromaVectorStore ──────────────────────────────────────────────────────────
@@ -277,11 +355,32 @@ class VectorStore:
                 namespace=self._namespace,
             )
         else:
+            persist_dir = self._resolve_persist_dir(self._namespace)
             log.info(
-                "VectorStore using NumpyVectorStore (in-memory)",
-                extra={"ctx_namespace": self._namespace},
+                "VectorStore using NumpyVectorStore",
+                extra={"ctx_namespace": self._namespace, "ctx_persist": str(persist_dir or "in-memory")},
             )
-            self._backend = NumpyVectorStore()
+            self._backend = NumpyVectorStore(persist_dir=persist_dir)
+
+    @staticmethod
+    def _resolve_persist_dir(namespace: str) -> Path | None:
+        """
+        Build a safe per-namespace persistence directory under settings.rag_persist_dir.
+        Returns None (in-memory only) when persistence is disabled. The namespace
+        is validated so it can never traverse outside the base directory.
+        """
+        base = (settings.rag_persist_dir or "").strip()
+        if not base:
+            return None
+        try:
+            safe_ns = validate_namespace(namespace)
+        except Exception:
+            # Un-tokenisable namespace (e.g. legacy default "aeos_default" has no
+            # dots but the collection default might) → fall back to in-memory
+            # rather than risk an unsafe path.
+            log.warning("Namespace not persist-safe; using in-memory store", extra={"ctx_namespace": namespace})
+            return None
+        return Path(base) / safe_ns
 
     # ── Write ──────────────────────────────────────────────────────────────────
 

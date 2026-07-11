@@ -40,6 +40,15 @@ class AEOSSettings(BaseSettings):
     rag_top_k: int = Field(default=5, description="Default number of RAG results to return")
     rag_chunk_size: int = Field(default=512, description="Target token count per chunk")
     rag_chunk_overlap: int = Field(default=64, description="Overlap tokens between consecutive chunks")
+    rag_persist_dir: str = Field(default="./data/rag", description="Directory for on-disk NumpyVectorStore persistence (empty = in-memory only)")
+    rag_max_ingest_chars: int = Field(default=1_000_000, description="Max characters accepted by /rag/ingest")
+    rag_max_query_chars: int = Field(default=4000, description="Max characters accepted by a RAG query/answer")
+    rag_max_top_k: int = Field(default=20, description="Upper bound on top_k accepted from clients")
+
+    # ── Security ──────────────────────────────────────────────────────────────
+    api_key: str = Field(default="", description="If set, RAG routes require a matching X-API-Key header (empty = open, for local demo)")
+    cors_allow_origins: list[str] = Field(default_factory=list, description="Explicit allowed CORS origins; empty = same-origin only (never wildcard+credentials)")
+    rag_rate_limit_per_minute: int = Field(default=60, description="Per-client request budget on RAG routes (token bucket)")
 
     # ── GitHub Analyzer ───────────────────────────────────────────────────────
     github_token: str = Field(default="", description="GitHub personal access token (optional, raises rate limit)")

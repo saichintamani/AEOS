@@ -203,7 +203,9 @@ def test_retriever_returns_ranked_results():
     ]
     embs = embedder.embed([c.text for c in chunks])
     store.add_chunks(chunks, doc_id="d_ret", embeddings=embs)
-    retriever = HybridRetriever(store, top_k=2)
+    # HybridRetriever is now RetrievalPipeline; top_k is a per-call arg, not a
+    # constructor arg. Pass it to retrieve() below.
+    retriever = HybridRetriever(store)
     results = retriever.retrieve("neural network machine learning", top_k=2)
     assert len(results) <= 2
     assert all(r.rank >= 1 for r in results)

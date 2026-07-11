@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from app.rag.pipeline import KnowledgePipeline
 from app.rag.retriever import RetrievedDocument
-from app.rag.schemas import Document
+from app.rag.schemas import Document, AnswerResult
 from app.core.logger import get_logger
 
 log = get_logger(__name__)
@@ -67,6 +67,18 @@ class RAGEngine:
         Returns empty list when the knowledge base is empty.
         """
         return self._pipeline.search(query=text, top_k=top_k, filters=filters)
+
+    def answer(
+        self,
+        text: str,
+        top_k: int | None = None,
+        filters: dict | None = None,
+    ) -> AnswerResult:
+        """
+        Retrieve context and generate a grounded, cited answer for the query.
+        This is the full RAG path (retrieval + generation).
+        """
+        return self._pipeline.answer(query=text, top_k=top_k, filters=filters)
 
     # ── Ingestion ──────────────────────────────────────────────────────────────
 

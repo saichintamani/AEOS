@@ -138,6 +138,61 @@ class ContextPackage:
         }
 
 
+# ── Generation types ───────────────────────────────────────────────────────────
+
+@dataclass
+class Citation:
+    """
+    A single source reference backing a generated answer.
+    `marker` is the 1-based number that appears inline in the answer as [1], [2]…
+    """
+    marker: int
+    source: str
+    doc_id: str
+    chunk_index: int
+    score: float
+    snippet: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "marker": self.marker,
+            "source": self.source,
+            "doc_id": self.doc_id,
+            "chunk_index": self.chunk_index,
+            "score": self.score,
+            "snippet": self.snippet,
+        }
+
+
+@dataclass
+class AnswerResult:
+    """
+    Final grounded answer returned by an AnswerGenerator — the "G" in RAG.
+    Always carries the citations it was built from so every claim is traceable
+    back to a retrieved chunk.
+    """
+    query: str
+    answer: str
+    citations: list[Citation]
+    sources: list[str]
+    confidence: float                 # 0.0–1.0, derived from top retrieval score
+    used_generator: str               # "extractive" | "openai" | ...
+    context_tokens: int = 0
+    latency_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "answer": self.answer,
+            "citations": [c.to_dict() for c in self.citations],
+            "sources": self.sources,
+            "confidence": self.confidence,
+            "used_generator": self.used_generator,
+            "context_tokens": self.context_tokens,
+            "latency_ms": self.latency_ms,
+        }
+
+
 # ── Pipeline operation stats ───────────────────────────────────────────────────
 
 @dataclass
