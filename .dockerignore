@@ -1,0 +1,18 @@
+# Build context hygiene — keep the image small and reproducible.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+.github/
+.claude/
+tests/
+docs/
+data/
+*.md
+!README.md
+.env
+.venv/
+venv/
+*.log
