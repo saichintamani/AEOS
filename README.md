@@ -27,6 +27,78 @@ AEOS provides a central Kernel that mediates all agent execution, a multi-tier M
 
 ---
 
+## RAG Quickstart — "Ask Your Documents" (run in 10 minutes)
+
+The RAG Knowledge Runtime is the most self-contained part of AEOS and ships with
+a browser UI. It runs **fully offline with zero API keys** — document ingestion,
+embedding, retrieval, and grounded *cited* answer generation all work locally.
+
+```bash
+# 1. Install (CPU-only; first run downloads the ~90 MB embedding model)
+pip install -r requirements.txt
+
+# 2. Run the API + UI
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# 3. Open the demo UI
+#    → http://localhost:8000/
+#    Drop a .txt/.md/.pdf/.html/.json file (or paste text), then ask a question.
+#    You get an answer with inline [1][2] citations back to the source chunks.
+```
+
+Or drive it from the API:
+
+```bash
+BASE=http://localhost:8000/api/v1/rag
+
+# Ingest
+curl -s -X POST $BASE/ingest -H "Content-Type: application/json" \
+  -d '{"text":"AEOS is an AI Engineering Orchestration System with a RAG layer.","source":"notes","namespace":"demo"}'
+
+# Ask — returns a grounded, cited answer (the "G" in RAG)
+curl -s -X POST $BASE/answer -H "Content-Type: application/json" \
+  -d '{"query":"What is AEOS?","namespace":"demo"}'
+
+# Upload a file
+curl -s -X POST $BASE/upload -F "file=@./README.md" -F "namespace=demo"
+```
+
+**Docker (one line):**
+
+```bash
+docker build -t aeos . && docker run --rm -p 8000:8000 aeos
+```
+
+### What makes this "real" RAG
+
+- **Generation, not just retrieval.** `/rag/answer` synthesizes an answer whose
+  every claim carries a `[n]` citation traceable to a retrieved chunk. The default
+  `ExtractiveGenerator` is deterministic and offline — it can only repeat text that
+  was actually retrieved, so it cannot hallucinate. Set `OPENAI_API_KEY` to switch
+  to LLM synthesis (`OpenAIGenerator`) with a prompt-injection-resistant system prompt.
+- **Persistence.** Ingested documents survive restarts (per-namespace on-disk store
+  under `./data/rag/`, saved as `npz` + `json` — never pickle).
+- **Hardened by default.** Every RAG input is validated and bounded: namespace
+  allow-list (`^[A-Za-z0-9_-]{1,64}$`), path-traversal confinement on file ingest,
+  upload size cap + type allow-list + filename sanitisation, bounded `top_k`,
+  per-client rate limiting, optional `X-API-Key` auth (set the `API_KEY` env var),
+  and generic error responses that never leak internals.
+
+### Security scope — honest limitations
+
+The hardening above covers the **RAG surface**. The following are **known,
+unaddressed** issues elsewhere in the codebase, out of scope for this slice:
+
+- `POST /ml/train` accepts an arbitrary `dataset_path` (unauthenticated file/URL
+  read via pandas). Do not expose it publicly.
+- The ML model registry uses `pickle.load` on `.pkl` files — loading a tampered
+  model file is remote-code-execution-on-load. Treat `./data/model_registry/` as
+  trusted-only.
+- Only the RAG routes carry auth/rate-limit; other endpoints (`/run`, `/execute`,
+  `/debug/state`, `/kernel/*`) are open. Run behind your own gateway in production.
+
+---
+
 ## What AEOS Is NOT
 
 | System | What it does | What AEOS does differently |

@@ -173,9 +173,10 @@ async def test_rag_ingest_text(async_client):
 
 
 @pytest.mark.asyncio
-async def test_rag_ingest_empty_text_returns_400(async_client):
+async def test_rag_ingest_empty_text_returns_422(async_client):
+    # Empty text now fails Pydantic min_length validation → 422 (was a manual 400).
     resp = await async_client.post("/api/v1/rag/ingest", json={"text": ""})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -196,9 +197,10 @@ async def test_rag_query_after_ingest(async_client):
 
 
 @pytest.mark.asyncio
-async def test_rag_query_empty_query_returns_400(async_client):
+async def test_rag_query_empty_query_returns_422(async_client):
+    # Empty query now fails Pydantic min_length validation → 422 (was a manual 400).
     resp = await async_client.post("/api/v1/rag/query", json={"query": ""})
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 # ── /api/v1/ml ─────────────────────────────────────────────────────────────────

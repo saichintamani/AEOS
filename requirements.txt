@@ -19,6 +19,11 @@ httpx==0.28.0
 sentence-transformers==3.3.1
 chromadb==0.5.23
 tiktoken==0.8.0
+beautifulsoup4==4.12.3          # HTMLLoader text extraction
+python-multipart==0.0.12        # multipart parsing for /rag/upload
+# openai>=1.0                    # OPTIONAL — enables OpenAIGenerator / OpenAIEmbeddings
+#                                 when OPENAI_API_KEY is set. Offline extractive
+#                                 generation is the default and needs nothing.
 
 # ── GitHub Analyzer ───────────────────────────────────────────────────────────
 PyGithub==2.5.0

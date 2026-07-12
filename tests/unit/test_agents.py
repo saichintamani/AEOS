@@ -161,9 +161,10 @@ async def test_research_agent_empty_store_returns_result():
 @pytest.mark.asyncio
 async def test_research_agent_with_ingested_data():
     from app.agents.research_agent import ResearchAgent
-    from app.rag.rag_engine import RAGEngine
-    # Use isolated namespace
-    engine = RAGEngine(namespace="test_research")
+    from app.rag.rag_engine import get_rag_engine
+    # Use isolated namespace (RAGEngine wraps a pipeline; build via the factory)
+    engine = get_rag_engine("test_research")
+    engine.reset()  # clean any persisted data from a prior run
     await engine.initialize()
     engine.ingest_text(
         "AEOS is a production-grade AI Engineering Orchestration System built with FastAPI.",
