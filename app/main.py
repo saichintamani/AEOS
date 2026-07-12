@@ -7,16 +7,30 @@ Phase 8A:    AEOS HyperKernel wired into lifespan.
 Phase 9B.6:  InvariantEngine, Prometheus /metrics, validation routes.
 """
 
+import hmac
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+from app.rag.security import (
+    RateLimiter,
+    SecurityError,
+    safe_resolve,
+    sanitize_filename,
+    validate_namespace,
+    validate_upload_extension,
+)
+from app.rag.loader import MAX_FILE_SIZE_BYTES
 
 from app.core.config import settings
 from app.core.logger import get_logger, set_trace_context
@@ -40,6 +54,40 @@ from app.distributed.observability.prometheus import PrometheusExporter, APIMetr
 _metrics_registry = MetricsRegistry(node_id="aeos-api")
 _prometheus_exporter = PrometheusExporter(_metrics_registry, node_id="aeos-api")
 _api_metrics = APIMetrics(_metrics_registry)
+
+# ── RAG route guard: per-client rate limit + optional API key ──────────────────
+_rag_rate_limiter = RateLimiter(capacity=settings.rag_rate_limit_per_minute)
+
+
+async def rag_guard(request: Request) -> None:
+    """
+    FastAPI dependency protecting the RAG routes:
+      1. Token-bucket rate limit keyed by client IP.
+      2. Optional X-API-Key check (enforced only when settings.api_key is set).
+    Constant-time key comparison avoids timing side-channels.
+    """
+    client = request.client.host if request.client else "unknown"
+    if not _rag_rate_limiter.allow(client):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Rate limit exceeded. Slow down.")
+    if settings.api_key:
+        provided = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(provided, settings.api_key):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Invalid or missing API key.")
+
+
+def _rag_error(request: Request, exc: Exception) -> JSONResponse:
+    """Generic 500 for RAG routes — logs the detail, never leaks it to the client."""
+    log.exception("RAG route failure", extra={"ctx_path": request.url.path})
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "status": "error",
+            "message": "Internal error while processing the request.",
+            "trace_id": getattr(request.state, "trace_id", None),
+        },
+    )
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -180,12 +228,16 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS: never pair a wildcard origin with credentials. Use an explicit
+    # allow-list from config; empty list = same-origin only (the web UI is served
+    # from this same app, so it needs no cross-origin grant).
+    _cors_origins = list(settings.cors_allow_origins)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.debug else [],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=_cors_origins,
+        allow_credentials=bool(_cors_origins),
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Trace-Id"],
     )
 
     @app.middleware("http")
@@ -220,6 +272,20 @@ def create_app() -> FastAPI:
 
     _register_routes(app)
 
+    # ── Static demo UI ─────────────────────────────────────────────────────────
+    # Serves the single-page "Ask-your-documents" UI at "/" and its assets under
+    # /static. Same-origin, so no CORS grant required.
+    _static_dir = Path(__file__).parent / "static"
+    if _static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+        @app.get("/", include_in_schema=False)
+        async def index():
+            index_file = _static_dir / "index.html"
+            if index_file.is_file():
+                return FileResponse(str(index_file))
+            return JSONResponse(content={"status": "ok", "message": "AEOS API is running."})
+
     # ── Validation routes (Phase 9B.6 Priority 1) ──────────────────────────────
     from app.api.validation import router as validation_router
     app.include_router(validation_router, prefix=settings.api_prefix)
@@ -232,6 +298,24 @@ def create_app() -> FastAPI:
 class RunRequest(BaseModel):
     task: str = Field(..., min_length=1, max_length=4000)
     mode: str = Field(default="single-agent", description="'single-agent' | 'multi-agent'")
+
+
+# ── RAG request models (bounded + validated) ───────────────────────────────────
+
+class RagIngestRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=1_000_000)
+    source: str = Field(default="api", max_length=200)
+    namespace: str = Field(default="default", max_length=64)
+
+
+class RagQueryRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    namespace: str = Field(default="default", max_length=64)
+
+
+class RagAnswerRequest(RagQueryRequest):
+    """Same shape as a query; returns a generated cited answer instead of chunks."""
 
 
 class HealthResponse(BaseModel):
@@ -523,42 +607,103 @@ def _register_routes(app: FastAPI) -> None:
         })
 
     # ── /rag/ingest ────────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/rag/ingest", tags=["RAG Engine"])
-    async def rag_ingest(request: Request, body: dict):
+    @app.post(f"{settings.api_prefix}/rag/ingest", tags=["RAG Engine"], dependencies=[Depends(rag_guard)])
+    async def rag_ingest(request: Request, body: RagIngestRequest):
         from app.rag.rag_engine import get_rag_engine
-        text = body.get("text", "")
-        source = body.get("source", "api")
-        namespace = body.get("namespace", "default")
-        if not text:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": "Field 'text' is required."},
-            )
-        engine = get_rag_engine(namespace)
-        chunks = engine.ingest_text(text, source=source)
+        try:
+            namespace = validate_namespace(body.namespace)
+        except SecurityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        try:
+            engine = get_rag_engine(namespace)
+            chunks = engine.ingest_text(body.text, source=body.source)
+        except Exception as exc:
+            return _rag_error(request, exc)
         return JSONResponse(content={"status": "success", "chunks_added": chunks, "namespace": namespace})
 
-    # ── /rag/query ─────────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/rag/query", tags=["RAG Engine"])
-    async def rag_query(request: Request, body: dict):
+    # ── /rag/query (raw ranked chunks) ─────────────────────────────────────────
+    @app.post(f"{settings.api_prefix}/rag/query", tags=["RAG Engine"], dependencies=[Depends(rag_guard)])
+    async def rag_query(request: Request, body: RagQueryRequest):
         from app.rag.rag_engine import get_rag_engine
-        query = body.get("query", "")
-        top_k = body.get("top_k", settings.rag_top_k)
-        namespace = body.get("namespace", "default")
-        if not query:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": "Field 'query' is required."},
-            )
-        engine = get_rag_engine(namespace)
-        results = engine.query(query, top_k=top_k)
+        try:
+            namespace = validate_namespace(body.namespace)
+        except SecurityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        try:
+            engine = get_rag_engine(namespace)
+            results = engine.query(body.query, top_k=body.top_k)
+        except Exception as exc:
+            return _rag_error(request, exc)
         return JSONResponse(content={
             "status": "success",
-            "query": query,
+            "query": body.query,
             "results": [
                 {"text": r.text, "score": r.score, "rank": r.rank, "source": r.metadata.get("source", "")}
                 for r in results
             ],
+        })
+
+    # ── /rag/answer (grounded, cited answer — the "G" in RAG) ──────────────────
+    @app.post(f"{settings.api_prefix}/rag/answer", tags=["RAG Engine"], dependencies=[Depends(rag_guard)])
+    async def rag_answer(request: Request, body: RagAnswerRequest):
+        from app.rag.rag_engine import get_rag_engine
+        try:
+            namespace = validate_namespace(body.namespace)
+        except SecurityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        try:
+            engine = get_rag_engine(namespace)
+            result = engine.answer(body.query, top_k=body.top_k)
+        except Exception as exc:
+            return _rag_error(request, exc)
+        return JSONResponse(content={"status": "success", **result.to_dict()})
+
+    # ── /rag/upload (hardened file ingestion) ──────────────────────────────────
+    @app.post(f"{settings.api_prefix}/rag/upload", tags=["RAG Engine"], dependencies=[Depends(rag_guard)])
+    async def rag_upload(
+        request: Request,
+        file: UploadFile = File(...),
+        namespace: str = Form("default"),
+    ):
+        from app.rag.rag_engine import get_rag_engine
+        # 1. Validate namespace + file type before touching disk.
+        try:
+            ns = validate_namespace(namespace)
+            validate_upload_extension(file.filename or "")
+        except SecurityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        # 2. Read with a hard size cap (never trust Content-Length).
+        data = await file.read(MAX_FILE_SIZE_BYTES + 1)
+        if len(data) > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(status_code=413,
+                                detail=f"File too large (> {MAX_FILE_SIZE_BYTES // 1_048_576} MB).")
+        if not data:
+            raise HTTPException(status_code=422, detail="Empty file.")
+
+        # 3. Write to a confined temp dir under a sanitised name, ingest, delete.
+        upload_root = Path(tempfile.gettempdir()) / "aeos_uploads"
+        upload_root.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex}_{sanitize_filename(file.filename or 'upload')}"
+        dest = safe_resolve(upload_root, safe_name)
+        clean_name = sanitize_filename(file.filename or "upload")
+        try:
+            dest.write_bytes(data)
+            engine = get_rag_engine(ns)
+            # Store the original filename as the source, never the temp path.
+            chunks = engine.ingest_file(str(dest), source=clean_name)
+        except Exception as exc:
+            return _rag_error(request, exc)
+        finally:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return JSONResponse(content={
+            "status": "success",
+            "filename": clean_name,
+            "chunks_added": chunks,
+            "namespace": ns,
         })
 
 

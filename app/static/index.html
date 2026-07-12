@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AEOS · Ask Your Documents</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #30363d; --muted: #8b949e;
+      --text: #e6edf3; --accent: #2f81f7; --accent-2: #1f6feb; --ok: #3fb950;
+      --chip: #21262d; --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.55;
+    }
+    header {
+      padding: 22px 28px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: baseline; gap: 14px;
+    }
+    header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+    header .tag { color: var(--muted); font-size: 13px; }
+    main { max-width: 900px; margin: 0 auto; padding: 26px 20px 80px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px; margin-bottom: 20px;
+    }
+    .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    input[type=text], textarea, select {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit; width: 100%;
+    }
+    textarea { resize: vertical; min-height: 70px; }
+    .grow { flex: 1; min-width: 200px; }
+    button {
+      background: var(--accent-2); color: #fff; border: 0; border-radius: 8px;
+      padding: 10px 16px; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    }
+    button:hover { background: var(--accent); }
+    button:disabled { opacity: .55; cursor: default; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .drop {
+      border: 1.5px dashed var(--border); border-radius: 8px; padding: 22px; text-align: center;
+      color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    .drop.drag { border-color: var(--accent); background: rgba(47,129,247,.08); color: var(--text); }
+    #answer { white-space: pre-wrap; font-size: 15px; }
+    .cite {
+      display: inline-block; min-width: 20px; text-align: center; padding: 0 5px; margin: 0 1px;
+      background: var(--chip); border: 1px solid var(--border); border-radius: 5px;
+      font-size: 12px; color: var(--accent); vertical-align: baseline;
+    }
+    .sources { margin-top: 16px; }
+    .src {
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px; background: var(--bg);
+    }
+    .src .meta { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: flex; justify-content: space-between; gap: 10px; }
+    .src .snippet { font-size: 13px; }
+    .badge { font-size: 11px; color: var(--muted); }
+    .meter { color: var(--ok); }
+    .status { font-size: 13px; color: var(--muted); min-height: 18px; margin-top: 8px; }
+    .status.err { color: #f85149; }
+    .pill { background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+    footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AEOS · Ask Your Documents</h1>
+    <span class="tag">Retrieval-Augmented Generation demo</span>
+  </header>
+
+  <main>
+    <!-- Ingest -->
+    <section class="panel">
+      <h2>1 · Add knowledge</h2>
+      <div class="row" style="margin-bottom:12px">
+        <label class="pill">namespace</label>
+        <input type="text" id="ns" value="default" title="Namespace" placeholder="namespace" style="max-width:220px" />
+        <span class="hint" style="margin:0">Isolate document sets. Letters, digits, <code>_</code>, <code>-</code>.</span>
+      </div>
+
+      <div id="drop" class="drop">
+        📄 &nbsp;Drop a file here, or click to choose &nbsp;<span class="badge">(.txt .md .pdf .html .json · max 10&nbsp;MB)</span>
+        <input type="file" id="fileInput" hidden accept=".txt,.md,.markdown,.pdf,.html,.htm,.json" />
+      </div>
+
+      <div style="margin-top:14px">
+        <textarea id="pasteText" placeholder="…or paste raw text to ingest"></textarea>
+        <div class="row" style="margin-top:10px; justify-content:flex-end">
+          <button type="button" id="ingestBtn">Ingest text</button>
+        </div>
+      </div>
+      <div id="ingestStatus" class="status"></div>
+    </section>
+
+    <!-- Ask -->
+    <section class="panel">
+      <h2>2 · Ask a question</h2>
+      <div class="row">
+        <input type="text" id="question" class="grow" placeholder="e.g. What is AEOS?"
+               onkeydown="if(event.key==='Enter')document.getElementById('askBtn').click()" />
+        <button type="button" id="askBtn">Ask</button>
+      </div>
+      <div id="askStatus" class="status"></div>
+    </section>
+
+    <!-- Answer -->
+    <section class="panel" id="answerPanel" style="display:none">
+      <h2>Answer <span id="genBadge" class="badge"></span></h2>
+      <div id="answer"></div>
+      <div class="sources" id="sources"></div>
+    </section>
+  </main>
+
+  <footer>Grounded answers only — every claim is traceable to a cited source chunk.</footer>
+
+  <script>
+    const API = "/api/v1/rag";
+    const $ = (id) => document.getElementById(id);
+    const nsVal = () => ($("ns").value || "default").trim();
+
+    function setStatus(el, msg, isErr = false) {
+      el.textContent = msg;
+      el.className = "status" + (isErr ? " err" : "");
+    }
+
+    async function postJSON(path, body) {
+      const res = await fetch(API + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.message || ("HTTP " + res.status));
+      return data;
+    }
+
+    // ── Ingest: paste text ──────────────────────────────────────────────
+    $("ingestBtn").onclick = async () => {
+      const text = $("pasteText").value.trim();
+      if (!text) return setStatus($("ingestStatus"), "Nothing to ingest.", true);
+      $("ingestBtn").disabled = true;
+      setStatus($("ingestStatus"), "Ingesting…");
+      try {
+        const d = await postJSON("/ingest", { text, source: "pasted", namespace: nsVal() });
+        setStatus($("ingestStatus"), `✓ Added ${d.chunks_added} chunk(s) to "${d.namespace}".`);
+        $("pasteText").value = "";
+      } catch (e) {
+        setStatus($("ingestStatus"), "✗ " + e.message, true);
+      } finally { $("ingestBtn").disabled = false; }
+    };
+
+    // ── Ingest: file upload ─────────────────────────────────────────────
+    async function uploadFile(file) {
+      if (!file) return;
+      setStatus($("ingestStatus"), `Uploading ${file.name}…`);
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("namespace", nsVal());
+      try {
+        const res = await fetch(API + "/upload", { method: "POST", body: fd });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.detail || d.message || ("HTTP " + res.status));
+        setStatus($("ingestStatus"), `✓ ${d.filename}: added ${d.chunks_added} chunk(s) to "${d.namespace}".`);
+      } catch (e) {
+        setStatus($("ingestStatus"), "✗ " + e.message, true);
+      }
+    }
+
+    const drop = $("drop");
+    drop.onclick = () => $("fileInput").click();
+    $("fileInput").onchange = (e) => uploadFile(e.target.files[0]);
+    ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+    ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+    drop.addEventListener("drop", e => uploadFile(e.dataTransfer.files[0]));
+
+    // ── Ask ─────────────────────────────────────────────────────────────
+    function renderCitations(text) {
+      // Escape first (answer text is document-derived / untrusted → no XSS),
+      // THEN turn [1], [2] into styled chips.
+      return escapeHtml(text).replace(/\[(\d+)\]/g, '<span class="cite">$1</span>');
+    }
+
+    $("askBtn").onclick = async () => {
+      const query = $("question").value.trim();
+      if (!query) return setStatus($("askStatus"), "Enter a question.", true);
+      $("askBtn").disabled = true;
+      setStatus($("askStatus"), "Thinking…");
+      try {
+        const d = await postJSON("/answer", { query, top_k: 5, namespace: nsVal() });
+        setStatus($("askStatus"), "");
+        $("answerPanel").style.display = "block";
+        $("genBadge").textContent = `· ${d.used_generator} · confidence ${(d.confidence * 100).toFixed(0)}%`;
+        $("answer").innerHTML = renderCitations(d.answer || "");
+        const src = $("sources");
+        src.innerHTML = (d.citations && d.citations.length)
+          ? "<div class='badge' style='margin-bottom:6px'>Sources</div>" + d.citations.map(c => `
+              <div class="src">
+                <div class="meta"><span><span class="cite">${c.marker}</span> ${escapeHtml(c.source)}</span>
+                <span class="meter">score ${(c.score * 100).toFixed(0)}%</span></div>
+                <div class="snippet">${escapeHtml(c.snippet)}</div>
+              </div>`).join("")
+          : "";
+      } catch (e) {
+        setStatus($("askStatus"), "✗ " + e.message, true);
+      } finally { $("askBtn").disabled = false; }
+    };
+
+    function escapeHtml(s) {
+      return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+  </script>
+</body>
+</html>

@@ -82,9 +82,13 @@ class RAGEngine:
 
     # ── Ingestion ──────────────────────────────────────────────────────────────
 
-    def ingest_file(self, path: str) -> int:
-        """Ingest a single file. Returns the number of chunks added."""
-        stats = self._pipeline.ingest_file(path)
+    def ingest_file(self, path: str, source: str | None = None) -> int:
+        """
+        Ingest a single file. Returns the number of chunks added.
+        Pass `source` to override the stored source label (e.g. the original
+        upload filename instead of a temp path).
+        """
+        stats = self._pipeline.ingest_file(path, source=source)
         return stats.chunks_stored
 
     def ingest_directory(self, path: str, extensions: list[str] | None = None) -> int:

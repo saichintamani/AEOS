@@ -135,11 +135,15 @@ class KnowledgePipeline:
         )
         return self._ingest_document(doc)
 
-    def ingest_file(self, path: str) -> IngestStats:
+    def ingest_file(self, path: str, source: str | None = None) -> IngestStats:
         """
         Load and ingest a single file.
         Supported: .pdf .md .txt .html .json .py .ts .js .go .rs .yaml and more.
         Raises PipelineError on load failure.
+
+        `source` overrides the stored source label. Callers ingesting from a
+        temporary path (e.g. an upload) should pass the original filename so the
+        internal path never leaks into stored metadata or API responses.
         """
         t0 = time.perf_counter()
         try:
@@ -150,6 +154,9 @@ class KnowledgePipeline:
                 extra={"ctx_path": path, "ctx_error": str(exc)},
             )
             raise PipelineError(f"File load failed: {exc}", {"path": path}) from exc
+        if source:
+            doc.source = source
+            doc.metadata["source"] = source
         load_ms = round((time.perf_counter() - t0) * 1000, 2)
         stats = self._ingest_document(doc)
         stats.latency_ms = round(stats.latency_ms + load_ms, 2)
