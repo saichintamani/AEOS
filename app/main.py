@@ -55,31 +55,61 @@ _metrics_registry = MetricsRegistry(node_id="aeos-api")
 _prometheus_exporter = PrometheusExporter(_metrics_registry, node_id="aeos-api")
 _api_metrics = APIMetrics(_metrics_registry)
 
-# ── RAG route guard: per-client rate limit + optional API key ──────────────────
-_rag_rate_limiter = RateLimiter(capacity=settings.rag_rate_limit_per_minute)
+# ── Tiered, configurable rate limiting ─────────────────────────────────────────
+# One token-bucket limiter per endpoint tier; thresholds come from config, never
+# hardcoded. The "expensive" tier adds exponential backoff for repeat offenders.
+_rl_expensive = RateLimiter(
+    capacity=settings.rate_limit_expensive_per_minute,
+    penalty_base=settings.rate_limit_backoff_base_seconds,
+    penalty_max=settings.rate_limit_backoff_max_seconds,
+)
+_rl_rag = RateLimiter(capacity=settings.rag_rate_limit_per_minute)
+_rl_default = RateLimiter(capacity=settings.rate_limit_default_per_minute)
 
 
-async def rag_guard(request: Request) -> None:
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_rate(limiter: RateLimiter, request: Request, tier: str) -> None:
+    """Raise 429 (with Retry-After) if the client has exhausted its tier budget."""
+    if not settings.rate_limit_enabled:
+        return
+    decision = limiter.check(f"{tier}:{_client_ip(request)}")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Retry later.",
+            headers={"Retry-After": str(int(decision.retry_after) + 1)},
+        )
+
+
+def _make_guard(limiter: RateLimiter, tier: str, require_key: bool = False):
+    """Build a FastAPI dependency: per-IP rate limit + optional X-API-Key auth."""
+    async def guard(request: Request) -> None:
+        _enforce_rate(limiter, request, tier)
+        if require_key and settings.api_key:
+            provided = request.headers.get("X-API-Key", "")
+            if not hmac.compare_digest(provided, settings.api_key):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or missing API key.",
+                )
+    return guard
+
+
+# Tier guards used as route dependencies.
+rag_guard = _make_guard(_rl_rag, "rag", require_key=True)
+expensive_guard = _make_guard(_rl_expensive, "expensive")
+default_guard = _make_guard(_rl_default, "default")
+
+
+def _api_error(request: Request, exc: Exception, log_msg: str = "API route failure") -> JSONResponse:
     """
-    FastAPI dependency protecting the RAG routes:
-      1. Token-bucket rate limit keyed by client IP.
-      2. Optional X-API-Key check (enforced only when settings.api_key is set).
-    Constant-time key comparison avoids timing side-channels.
+    Generic 500 for any route — logs full detail server-side, returns only a
+    generic message + trace_id to the client (no stack traces / internals).
     """
-    client = request.client.host if request.client else "unknown"
-    if not _rag_rate_limiter.allow(client):
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                            detail="Rate limit exceeded. Slow down.")
-    if settings.api_key:
-        provided = request.headers.get("X-API-Key", "")
-        if not hmac.compare_digest(provided, settings.api_key):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                                detail="Invalid or missing API key.")
-
-
-def _rag_error(request: Request, exc: Exception) -> JSONResponse:
-    """Generic 500 for RAG routes — logs the detail, never leaks it to the client."""
-    log.exception("RAG route failure", extra={"ctx_path": request.url.path})
+    log.exception(log_msg, extra={"ctx_path": request.url.path})
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
@@ -88,6 +118,10 @@ def _rag_error(request: Request, exc: Exception) -> JSONResponse:
             "trace_id": getattr(request.state, "trace_id", None),
         },
     )
+
+
+# Backward-compatible alias for the RAG routes.
+_rag_error = _api_error
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -288,7 +322,11 @@ def create_app() -> FastAPI:
 
     # ── Validation routes (Phase 9B.6 Priority 1) ──────────────────────────────
     from app.api.validation import router as validation_router
-    app.include_router(validation_router, prefix=settings.api_prefix)
+    app.include_router(
+        validation_router,
+        prefix=settings.api_prefix,
+        dependencies=[Depends(default_guard)],
+    )
 
     return app
 
@@ -369,7 +407,7 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # ── /run ───────────────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/run", tags=["Orchestration"])
+    @app.post(f"{settings.api_prefix}/run", tags=["Orchestration"], dependencies=[Depends(expensive_guard)])
     async def run_task(request: Request, body: RunRequest):
         orchestrator: Orchestrator = request.app.state.orchestrator
         response = await orchestrator.run_task(task=body.task, mode=body.mode)
@@ -467,7 +505,7 @@ def _register_routes(app: FastAPI) -> None:
         })
 
     # ── /execute ───────────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/execute", tags=["HyperKernel"])
+    @app.post(f"{settings.api_prefix}/execute", tags=["HyperKernel"], dependencies=[Depends(expensive_guard)])
     async def execute_task(request: Request, body: RunRequest):
         """
         Execute a task through the 15-stage Execution Engine pipeline.
@@ -493,7 +531,7 @@ def _register_routes(app: FastAPI) -> None:
         return JSONResponse(content=response.to_dict(), status_code=http_status)
 
     # ── /github/analyze ────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/github/analyze", tags=["GitHub Analyzer"])
+    @app.post(f"{settings.api_prefix}/github/analyze", tags=["GitHub Analyzer"], dependencies=[Depends(expensive_guard)])
     async def analyze_github_repo(request: Request, body: GitHubAnalyzeRequest):
         from app.github_analyzer.indexer import RepoIndexer
         try:
@@ -517,7 +555,7 @@ def _register_routes(app: FastAPI) -> None:
             )
 
     # ── /ml/train ──────────────────────────────────────────────────────────────
-    @app.post(f"{settings.api_prefix}/ml/train", tags=["ML Pipeline"])
+    @app.post(f"{settings.api_prefix}/ml/train", tags=["ML Pipeline"], dependencies=[Depends(expensive_guard)])
     async def ml_train(request: Request, body: MLTrainRequest):
         from app.ml_pipeline.dataset import DatasetLoader
         from app.ml_pipeline.trainer import ModelTrainer

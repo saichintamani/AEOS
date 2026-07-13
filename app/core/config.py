@@ -50,6 +50,16 @@ class AEOSSettings(BaseSettings):
     cors_allow_origins: list[str] = Field(default_factory=list, description="Explicit allowed CORS origins; empty = same-origin only (never wildcard+credentials)")
     rag_rate_limit_per_minute: int = Field(default=60, description="Per-client request budget on RAG routes (token bucket)")
 
+    # ── Rate limiting (tiered, all configurable — no hardcoded thresholds) ─────
+    # Requests per minute per client IP, by endpoint tier.
+    rate_limit_enabled: bool = Field(default=True, description="Master switch for API rate limiting")
+    rate_limit_auth_per_minute: int = Field(default=10, description="Auth-tier tier limit (login/signup/reset-style); strictest")
+    rate_limit_auth_per_account_per_minute: int = Field(default=5, description="Auth-tier per-account limit (combined with per-IP)")
+    rate_limit_expensive_per_minute: int = Field(default=20, description="Expensive tier: agent runs, ML training, repo indexing")
+    rate_limit_default_per_minute: int = Field(default=120, description="Loose tier: read/introspection endpoints")
+    rate_limit_backoff_base_seconds: float = Field(default=1.0, description="Auth-tier exponential backoff base (0 disables backoff)")
+    rate_limit_backoff_max_seconds: float = Field(default=300.0, description="Auth-tier exponential backoff ceiling")
+
     # ── GitHub Analyzer ───────────────────────────────────────────────────────
     github_token: str = Field(default="", description="GitHub personal access token (optional, raises rate limit)")
     github_api_url: str = Field(default="https://api.github.com", description="GitHub API base URL")

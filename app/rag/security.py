@@ -12,9 +12,11 @@ both the pipeline and the HTTP layer.
 from __future__ import annotations
 
 import re
-import threading
-import time
 from pathlib import Path
+
+# RateLimiter now lives in core so any layer can use it; re-exported here for
+# backward compatibility with existing imports (app.rag.security.RateLimiter).
+from app.core.ratelimit import RateLimiter, RateDecision  # noqa: F401
 
 # A namespace becomes part of an on-disk directory name and a store collection
 # name, so it must be a strict, traversal-proof token.
@@ -77,29 +79,3 @@ def validate_upload_extension(filename: str) -> str:
         allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
         raise SecurityError(f"Unsupported file type '{ext or '(none)'}'. Allowed: {allowed}")
     return ext
-
-
-class RateLimiter:
-    """
-    Thread-safe token-bucket rate limiter keyed by an arbitrary string
-    (typically client IP). `capacity` tokens refill at `capacity/60` per second
-    by default, giving roughly `capacity` requests per minute with bursts.
-    """
-
-    def __init__(self, capacity: int = 60, refill_per_sec: float | None = None) -> None:
-        self._capacity = float(max(1, capacity))
-        self._refill = refill_per_sec if refill_per_sec is not None else self._capacity / 60.0
-        self._buckets: dict[str, tuple[float, float]] = {}  # key -> (tokens, last_ts)
-        self._lock = threading.Lock()
-
-    def allow(self, key: str) -> bool:
-        """Consume one token for `key`; return False if the bucket is empty."""
-        now = time.monotonic()
-        with self._lock:
-            tokens, last = self._buckets.get(key, (self._capacity, now))
-            tokens = min(self._capacity, tokens + (now - last) * self._refill)
-            if tokens < 1.0:
-                self._buckets[key] = (tokens, now)
-                return False
-            self._buckets[key] = (tokens - 1.0, now)
-            return True
