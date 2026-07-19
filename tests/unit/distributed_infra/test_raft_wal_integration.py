@@ -65,7 +65,7 @@ class TestWALWiring:
             await node.stop()
 
         # WAL directory must contain at least one segment file
-        wal_files = list(tmp_path.glob("*.wal"))
+        wal_files = list(tmp_path.glob("wal-*.seg"))
         assert wal_files, "WAL segment file must exist after propose()"
 
     @pytest.mark.asyncio
@@ -105,10 +105,10 @@ class TestWALWiring:
         # Read log entries back from WAL
         store = DurableLogStore(str(tmp_path))
         state = store.recover()
-        assert len(state.entries) == len(commands), (
-            f"WAL must have {len(commands)} entries, found {len(state.entries)}"
+        assert len(state.log) == len(commands), (
+            f"WAL must have {len(commands)} entries, found {len(state.log)}"
         )
-        for i, (entry, cmd) in enumerate(zip(state.entries, commands)):
+        for i, (entry, cmd) in enumerate(zip(state.log, commands)):
             assert entry.command == cmd, (
                 f"Entry {i} command mismatch: WAL={entry.command!r}, expected={cmd!r}"
             )
@@ -158,8 +158,8 @@ class TestRaftNodeRecovery:
         # Verify recovered log has all 10 entries in order
         store = DurableLogStore(data_dir)
         recovered_state = store.recover()
-        assert len(recovered_state.entries) == 10
-        for i, entry in enumerate(recovered_state.entries):
+        assert len(recovered_state.log) == 10
+        for i, entry in enumerate(recovered_state.log):
             assert entry.command.get("index") == i, (
                 f"Entry {i} has wrong command: {entry.command!r}"
             )

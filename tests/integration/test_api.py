@@ -134,14 +134,25 @@ async def test_run_multi_agent_has_review(async_client):
 
 # ── /api/v1/debug/state ────────────────────────────────────────────────────────
 
+@pytest.fixture
+def debug_mode():
+    """Enable debug mode for /debug routes (they return 403 when debug=False,
+    per HIGH-001 production hardening). Restores the original value afterward."""
+    from app.core.config import settings
+    original = settings.debug
+    settings.debug = True
+    yield
+    settings.debug = original
+
+
 @pytest.mark.asyncio
-async def test_debug_state_returns_200(async_client):
+async def test_debug_state_returns_200(async_client, debug_mode):
     resp = await async_client.get("/api/v1/debug/state")
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_debug_state_has_agents(async_client):
+async def test_debug_state_has_agents(async_client, debug_mode):
     resp = await async_client.get("/api/v1/debug/state")
     body = resp.json()
     assert "agents" in body
@@ -153,9 +164,22 @@ async def test_debug_state_has_agents(async_client):
 
 
 @pytest.mark.asyncio
-async def test_debug_state_shows_ready(async_client):
+async def test_debug_state_shows_ready(async_client, debug_mode):
     resp = await async_client.get("/api/v1/debug/state")
     assert resp.json()["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_debug_state_forbidden_in_production(async_client):
+    """HIGH-001: /debug/state must be denied when debug is disabled."""
+    from app.core.config import settings
+    original = settings.debug
+    settings.debug = False
+    try:
+        resp = await async_client.get("/api/v1/debug/state")
+        assert resp.status_code == 403
+    finally:
+        settings.debug = original
 
 
 # ── /api/v1/rag ────────────────────────────────────────────────────────────────

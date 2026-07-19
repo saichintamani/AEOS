@@ -100,9 +100,13 @@ class WALSegment:
 
     def open_write(self) -> None:
         """Open segment for appending (creates if not exists)."""
+        # O_BINARY is REQUIRED on Windows: without it os.open() uses text mode,
+        # and any 0x0A byte in the binary header (magic/CRC/length) is expanded
+        # to 0x0D 0x0A, shifting the stream and corrupting record framing. It is
+        # 0 (no-op) on POSIX, so this is safe cross-platform.
         self._fd = os.open(
             str(self.path),
-            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0),
             0o644,
         )
 

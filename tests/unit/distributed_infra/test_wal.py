@@ -433,7 +433,7 @@ class TestRaftPersistence:
         result = p2.recover()
         assert result.success
         # Should have 5 entries: 0,1,2,3 (term=1) + 4 (term=2)
-        entries = result.log
+        entries = p2.get_entries_from(0)
         assert len(entries) == 5
         assert entries[-1].term == 2
         p2.close()

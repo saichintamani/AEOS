@@ -50,6 +50,13 @@ class AEOSSettings(BaseSettings):
     cors_allow_origins: list[str] = Field(default_factory=list, description="Explicit allowed CORS origins; empty = same-origin only (never wildcard+credentials)")
     rag_rate_limit_per_minute: int = Field(default=60, description="Per-client request budget on RAG routes (token bucket)")
 
+    # ── Distributed execution trust (AC-EXEC-003) ─────────────────────────────
+    # When True, worker nodes reject any task lacking a cryptographically
+    # verifiable signed JWT (fail-closed). Consumed by the worker bootstrap to
+    # set WorkerRuntime(require_signed_tokens=...). Default False preserves the
+    # in-process dev/test path; production distributed deployments set True.
+    require_signed_tokens: bool = Field(default=False, description="Fail-closed: workers execute only tasks bearing a verifiable signed JWT")
+
     # ── Rate limiting (tiered, all configurable — no hardcoded thresholds) ─────
     # Requests per minute per client IP, by endpoint tier.
     rate_limit_enabled: bool = Field(default=True, description="Master switch for API rate limiting")
