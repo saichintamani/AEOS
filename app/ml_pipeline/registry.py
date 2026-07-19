@@ -1,17 +1,18 @@
 """
 AEOS ML Pipeline — Model Registry
-Filesystem-backed model store: pickle for the model, JSON for human-readable metadata.
+Filesystem-backed model store: joblib for the model, JSON for human-readable metadata.
 Layout:
   data/model_registry/
-    manifest.json            # index of all models
-    <model_id>.pkl           # serialized sklearn model
-    <model_id>_meta.json     # ModelRecord as JSON
+    manifest.json               # index of all models
+    <model_id>.joblib           # serialized sklearn model (joblib, not pickle)
+    <model_id>_meta.json        # ModelRecord as JSON
 """
 
 from __future__ import annotations
 import json
-import pickle
 import uuid
+
+import joblib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,12 +54,11 @@ class ModelRegistry:
         feature_names: list[str],
     ) -> ModelRecord:
         model_id = str(uuid.uuid4())[:8]
-        model_path = str(self._root / f"{model_id}.pkl")
+        model_path = str(self._root / f"{model_id}.joblib")
         meta_path = str(self._root / f"{model_id}_meta.json")
 
-        # Serialize model
-        with open(model_path, "wb") as f:
-            pickle.dump(model, f)
+        # Serialize model with joblib (safe for sklearn models; never use pickle)
+        joblib.dump(model, model_path)
 
         record = ModelRecord(
             model_id=model_id,
@@ -93,8 +93,7 @@ class ModelRegistry:
         record = self.get(model_id)
         if record is None:
             raise KeyError(f"Model '{model_id}' not found in registry.")
-        with open(record.model_path, "rb") as f:
-            return pickle.load(f)
+        return joblib.load(record.model_path)
 
     def get(self, model_id: str) -> ModelRecord | None:
         manifest = self._load_manifest()

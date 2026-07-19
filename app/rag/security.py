@@ -79,3 +79,49 @@ def validate_upload_extension(filename: str) -> str:
         allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
         raise SecurityError(f"Unsupported file type '{ext or '(none)'}'. Allowed: {allowed}")
     return ext
+
+
+# Magic bytes of executables / archives we never accept, regardless of extension.
+_EXECUTABLE_MAGIC = (
+    b"MZ",              # Windows PE / DOS
+    b"\x7fELF",         # Linux ELF
+    b"\xca\xfe\xba\xbe",  # Mach-O / Java class
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64
+    b"\xfe\xed\xfa\xce",  # Mach-O
+    b"PK\x03\x04",      # ZIP / Office / JAR (none of our allowed types are zip)
+    b"\x1f\x8b",        # gzip
+    b"\xde\xad\xbe\xef",  # some bytecode caches
+)
+
+
+def validate_upload_content(ext: str, data: bytes) -> None:
+    """
+    Content-based validation (not just the extension): confirm the *bytes* match
+    the claimed type and are never an executable/archive. Complements the
+    extension allow-list — an attacker renaming evil.exe → notes.txt is caught here.
+
+    - Reject any known executable/archive magic signature.
+    - `.pdf` must start with the `%PDF` signature.
+    - Text types (.txt/.md/.markdown/.html/.htm/.json) must be NUL-free, decodable text.
+    """
+    if not data:
+        raise SecurityError("Empty file.")
+    for magic in _EXECUTABLE_MAGIC:
+        if data.startswith(magic):
+            raise SecurityError("File content is an executable/archive; rejected.")
+
+    if ext == ".pdf":
+        if not data.startswith(b"%PDF"):
+            raise SecurityError("Content does not look like a valid PDF.")
+        return
+
+    # Remaining allowed types are text — must be genuine text, not disguised binary.
+    if b"\x00" in data[:8192]:
+        raise SecurityError("Binary content in a text file; rejected.")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            data.decode("latin-1")
+        except UnicodeDecodeError:
+            raise SecurityError("File is not valid text.")

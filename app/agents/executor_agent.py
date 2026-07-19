@@ -137,10 +137,11 @@ class ExecutorAgent(CognitiveAgent):
             execution_log.append(msg)
             return {"action": action, "status": "success", "result": result, "error": ""}
         except Exception as exc:
-            msg = f"[ERROR] {action}: {exc}"
-            execution_log.append(msg)
-            self._log.exception("Action execution failed", extra={"ctx_action": action})
-            return {"action": action, "status": "error", "result": None, "error": str(exc)}
+            # Full detail is logged server-side; the client-facing error stays
+            # generic so raw exception text never leaks through /run or /execute.
+            execution_log.append(f"[ERROR] {action}: execution failed")
+            self._log.exception("Action execution failed", extra={"ctx_action": action, "ctx_error": str(exc)})
+            return {"action": action, "status": "error", "result": None, "error": "Action execution failed."}
 
     def _dispatch(self, action: str, task: str, previous: Any, history: list[dict]) -> Any:
         if action == "summarize":

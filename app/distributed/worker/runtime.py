@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from app.distributed.contracts.cluster import NodeIdentity
 from app.distributed.contracts.events import DistributedEventType, EventConsumer, EventEnvelope, EventPublisher
@@ -24,6 +24,9 @@ from app.distributed.execution.lease import ExecutionLeaseManager
 from app.distributed.execution.states import ExecutionState
 from app.distributed.worker.governance import GovernanceClient, TokenRevokedException
 from app.distributed.worker.heartbeat import HeartbeatService
+
+if TYPE_CHECKING:
+    from app.security.token_verifier import TokenVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,11 @@ class WorkerRuntime:
         max_in_flight: int = 16,
         queue_capacity: int = 128,
         heartbeat_interval: float = 10.0,
+        token_verifier: "TokenVerifier | None" = None,
+        # Fail-closed mode (AC-EXEC-003): when True, tasks without a verifiable
+        # signed JWT are rejected before execution (enforced by GovernanceClient).
+        # Default False preserves dev/test unauthenticated behavior.
+        require_signed_tokens: bool = False,
     ) -> None:
         self._identity = identity
         self._publisher = publisher
@@ -72,7 +80,12 @@ class WorkerRuntime:
         self._dispatch_task: asyncio.Task | None = None
         self.metrics = WorkerMetrics()
 
-        self._governance = GovernanceClient(consumer, identity.node_id)
+        self._governance = GovernanceClient(
+            consumer,
+            identity.node_id,
+            token_verifier=token_verifier,
+            require_signed_tokens=require_signed_tokens,
+        )
         self._heartbeat = HeartbeatService(
             publisher=publisher,
             node_id=identity.node_id,
@@ -154,14 +167,27 @@ class WorkerRuntime:
                 fencing_token=payload.get("fencing_token", 0),
                 attempt=payload.get("attempt", 0),
                 max_attempts=payload.get("max_attempts", 3),
+                token_id=payload.get("token_id"),
+                raw_token=payload.get("raw_token"),
                 # Worker receives task that scheduler already placed in SCHEDULED state
                 state=ExecutionState.SCHEDULED,
             )
             try:
-                await self._governance.verify_token(ctx.token_id)
-            except TokenRevokedException:
-                logger.warning("Token revoked for task %s — skipping", ctx.task_id)
+                # Full check: fail-closed mandatory mode, cryptographic JWT
+                # verification (when verifier configured), then revocation set.
+                await self._governance.verify_token(ctx.token_id, raw_token=ctx.raw_token)
+            except TokenRevokedException as exc:
+                logger.warning(
+                    "Token rejected for task %s (%s) — skipping", ctx.task_id, exc.reason
+                )
+                self.metrics.failed_tasks += 1
                 self.metrics.in_flight_tasks -= 1
+                await self._publisher.publish(EventEnvelope(
+                    event_type=DistributedEventType.TASK_FAILED,
+                    payload={"task_id": ctx.task_id,
+                             "error": f"governance token rejected: {exc.reason}"},
+                    source_node_id=self.node_id,
+                ))
                 return
 
             ctx.transition(ExecutionState.RUNNING)

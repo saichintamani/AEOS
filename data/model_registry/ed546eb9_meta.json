@@ -1,0 +1,20 @@
+{
+  "model_id": "ed546eb9",
+  "name": "integration-test-model",
+  "algorithm": "random_forest",
+  "dataset_id": "686c000814ec6ce0",
+  "metrics": {
+    "task_type": "classification",
+    "accuracy": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+  },
+  "feature_names": [
+    "x1",
+    "x2"
+  ],
+  "created_at": "2026-07-12T07:49:15.399470+00:00",
+  "model_path": "data\\model_registry\\ed546eb9.pkl",
+  "meta_path": "data\\model_registry\\ed546eb9_meta.json"
+}

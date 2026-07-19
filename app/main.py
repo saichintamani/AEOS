@@ -14,13 +14,13 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.rag.security import (
     RateLimiter,
@@ -28,6 +28,7 @@ from app.rag.security import (
     safe_resolve,
     sanitize_filename,
     validate_namespace,
+    validate_upload_content,
     validate_upload_extension,
 )
 from app.rag.loader import MAX_FILE_SIZE_BYTES
@@ -199,6 +200,14 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = _orchestrator
     app.state.kernel = kernel
 
+    # Warn loudly when running without an API key in non-debug mode.
+    # In production, every endpoint should be behind an authenticated gateway.
+    if not settings.api_key and not settings.debug:
+        log.critical(
+            "SECURITY: API_KEY is not set. Non-RAG endpoints are unauthenticated. "
+            "Set the API_KEY environment variable before exposing this service externally."
+        )
+
     # ── 6. Expose metrics + validation state on app ────────────────────────────
     app.state.metrics_registry = _metrics_registry
     app.state.prometheus_exporter = _prometheus_exporter
@@ -334,8 +343,11 @@ def create_app() -> FastAPI:
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     task: str = Field(..., min_length=1, max_length=4000)
-    mode: str = Field(default="single-agent", description="'single-agent' | 'multi-agent'")
+    # Bounded + format-restricted (lowercase words/hyphens) to reject junk/injection
+    # while staying permissive about the exact mode string the orchestrator accepts.
+    mode: str = Field(default="single-agent", max_length=32, pattern=r"^[a-z][a-z-]*$")
 
 
 # ── RAG request models (bounded + validated) ───────────────────────────────────
@@ -364,19 +376,43 @@ class HealthResponse(BaseModel):
 
 
 class GitHubAnalyzeRequest(BaseModel):
-    repo: str = Field(..., description="GitHub repo in 'owner/repo' format", examples=["octocat/Hello-World"])
+    model_config = {"extra": "forbid"}
+    repo: str = Field(
+        ..., min_length=3, max_length=140,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+        description="GitHub repo in 'owner/repo' format", examples=["octocat/Hello-World"],
+    )
     index_into_rag: bool = Field(default=True)
-    file_extensions: list[str] = Field(default=[".py", ".md", ".txt"])
+    file_extensions: list[str] = Field(default=[".py", ".md", ".txt"], max_length=20)
+
+    @field_validator("file_extensions")
+    @classmethod
+    def _validate_extensions(cls, exts: list[str]) -> list[str]:
+        import re
+        for e in exts:
+            if not re.match(r"^\.[A-Za-z0-9]{1,10}$", e):
+                raise ValueError(f"Invalid file extension: {e!r} (expected like '.py')")
+        return exts
 
 
 class MLTrainRequest(BaseModel):
-    dataset_path: str | None = Field(default=None, description="Path to CSV or JSON file")
-    inline_data: list[dict] | None = Field(default=None, description="Inline rows as list of dicts")
-    target_column: str = Field(..., description="Column name to predict")
-    algorithm: str = Field(default="random_forest")
-    model_name: str = Field(..., description="Human-readable name for the saved model")
+    model_config = {"extra": "forbid"}
+    # dataset_path is confined to the datasets directory at the route (see ml_train);
+    # here it is only length/format-bounded. Prefer inline_data.
+    dataset_path: str | None = Field(default=None, max_length=512, description="Filename under the datasets dir (CSV/JSON)")
+    inline_data: list[dict] | None = Field(default=None, max_length=50_000, description="Inline rows as list of dicts")
+    target_column: str = Field(..., min_length=1, max_length=128)
+    algorithm: str = Field(default="random_forest", max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    model_name: str = Field(..., min_length=1, max_length=200)
     hyperparams: dict[str, Any] = Field(default_factory=dict)
     test_size: float = Field(default=0.2, ge=0.05, le=0.5)
+
+    @field_validator("hyperparams")
+    @classmethod
+    def _bound_hyperparams(cls, hp: dict) -> dict:
+        if len(hp) > 50:
+            raise ValueError("Too many hyperparameters (max 50)")
+        return hp
 
 
 # ── Route registration ─────────────────────────────────────────────────────────
@@ -417,6 +453,8 @@ def _register_routes(app: FastAPI) -> None:
     # ── /debug/state ───────────────────────────────────────────────────────────
     @app.get(f"{settings.api_prefix}/debug/state", tags=["Debug"], include_in_schema=settings.debug)
     async def debug_state(request: Request):
+        if not settings.debug:
+            raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production mode.")
         orchestrator: Orchestrator = request.app.state.orchestrator
         kernel = getattr(request.app.state, "kernel", None)
         state = orchestrator.state()
@@ -446,6 +484,8 @@ def _register_routes(app: FastAPI) -> None:
     # ── /kernel/introspect ─────────────────────────────────────────────────────
     @app.get(f"{settings.api_prefix}/kernel/introspect", tags=["HyperKernel"], include_in_schema=settings.debug)
     async def kernel_introspect(request: Request):
+        if not settings.debug:
+            raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production mode.")
         kernel = getattr(request.app.state, "kernel", None)
         if kernel is None:
             return JSONResponse(status_code=503, content={"error": "Kernel unavailable"})
@@ -462,7 +502,7 @@ def _register_routes(app: FastAPI) -> None:
 
     # ── /execution/graph ──────────────────────────────────────────────────────
     @app.get(f"{settings.api_prefix}/execution/graph", tags=["Execution Engine"])
-    async def execution_graph(request: Request, fmt: str = "json"):
+    async def execution_graph(request: Request, fmt: Literal["json", "mermaid", "dot", "ascii"] = "json"):
         """
         Export the last execution graph in the requested format.
         ?fmt=json (default) | mermaid | dot | ascii
@@ -484,7 +524,7 @@ def _register_routes(app: FastAPI) -> None:
 
     # ── /execution/metrics ────────────────────────────────────────────────────
     @app.get(f"{settings.api_prefix}/execution/metrics", tags=["Execution Engine"])
-    async def execution_metrics(request: Request, fmt: str = "json"):
+    async def execution_metrics(request: Request, fmt: Literal["json", "prometheus"] = "json"):
         """
         Per-node and workflow metrics.
         ?fmt=json (default) | prometheus
@@ -542,17 +582,16 @@ def _register_routes(app: FastAPI) -> None:
                 file_extensions=body.file_extensions,
             )
             return JSONResponse(content={"status": "success", "result": stats})
-        except ValueError as exc:
+        except ValueError:
+            # Client-side problem (bad/inaccessible repo, missing token). Log the
+            # detail server-side; return a controlled message with no internals.
+            log.warning("GitHub analyze rejected", extra={"ctx_repo": body.repo})
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": str(exc)},
+                content={"status": "error", "message": "Invalid request or repository not accessible."},
             )
         except Exception as exc:
-            log.exception("GitHub analyze failed", extra={"ctx_repo": body.repo})
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"status": "error", "message": str(exc)},
-            )
+            return _api_error(request, exc, "GitHub analyze failed")
 
     # ── /ml/train ──────────────────────────────────────────────────────────────
     @app.post(f"{settings.api_prefix}/ml/train", tags=["ML Pipeline"], dependencies=[Depends(expensive_guard)])
@@ -567,11 +606,25 @@ def _register_routes(app: FastAPI) -> None:
             if body.inline_data:
                 df, meta = loader.load_inline(body.inline_data, name=body.model_name, target_col=body.target_column)
             elif body.dataset_path:
-                ext = body.dataset_path.rsplit(".", 1)[-1].lower()
-                if ext == "json":
-                    df, meta = loader.load_json(body.dataset_path, target_col=body.target_column)
+                # SECURITY: confine to the datasets directory. Prevents arbitrary
+                # file / URL reads via pandas (path traversal, absolute paths, URLs).
+                try:
+                    safe_path = safe_resolve(settings.ml_dataset_path, body.dataset_path)
+                except SecurityError:
+                    return JSONResponse(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        content={"status": "error", "message": "dataset_path must be a file within the datasets directory."},
+                    )
+                if not safe_path.is_file():
+                    return JSONResponse(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        content={"status": "error", "message": "Dataset file not found."},
+                    )
+                ext = safe_path.suffix.lower()
+                if ext == ".json":
+                    df, meta = loader.load_json(str(safe_path), target_col=body.target_column)
                 else:
-                    df, meta = loader.load_csv(body.dataset_path, target_col=body.target_column)
+                    df, meta = loader.load_csv(str(safe_path), target_col=body.target_column)
             else:
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -616,17 +669,15 @@ def _register_routes(app: FastAPI) -> None:
                 "train_meta": train_result["train_meta"],
             })
 
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError):
+            # Bad training input (unknown algorithm, missing target column, etc.).
+            log.warning("ML training rejected", extra={"ctx_model": body.model_name})
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "error", "message": str(exc)},
+                content={"status": "error", "message": "Invalid training request or dataset."},
             )
         except Exception as exc:
-            log.exception("ML training failed")
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"status": "error", "message": str(exc)},
-            )
+            return _api_error(request, exc, "ML training failed")
 
     # ── /ml/models ─────────────────────────────────────────────────────────────
     @app.get(f"{settings.api_prefix}/ml/models", tags=["ML Pipeline"])
@@ -704,10 +755,10 @@ def _register_routes(app: FastAPI) -> None:
         namespace: str = Form("default"),
     ):
         from app.rag.rag_engine import get_rag_engine
-        # 1. Validate namespace + file type before touching disk.
+        # 1. Validate namespace + file extension before touching disk.
         try:
             ns = validate_namespace(namespace)
-            validate_upload_extension(file.filename or "")
+            ext = validate_upload_extension(file.filename or "")
         except SecurityError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
@@ -718,6 +769,13 @@ def _register_routes(app: FastAPI) -> None:
                                 detail=f"File too large (> {MAX_FILE_SIZE_BYTES // 1_048_576} MB).")
         if not data:
             raise HTTPException(status_code=422, detail="Empty file.")
+
+        # 2b. Content-based validation: bytes must match the claimed type and must
+        #     never be an executable/archive (defeats extension spoofing).
+        try:
+            validate_upload_content(ext, data)
+        except SecurityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
         # 3. Write to a confined temp dir under a sanitised name, ingest, delete.
         upload_root = Path(tempfile.gettempdir()) / "aeos_uploads"

@@ -1,0 +1,20 @@
+{
+  "model_id": "c3265739",
+  "name": "list-test-model",
+  "algorithm": "logistic_regression",
+  "dataset_id": "686c000814ec6ce0",
+  "metrics": {
+    "task_type": "classification",
+    "accuracy": 0.5,
+    "precision": 1.0,
+    "recall": 0.5,
+    "f1": 0.6667
+  },
+  "feature_names": [
+    "x1",
+    "x2"
+  ],
+  "created_at": "2026-07-12T07:49:15.612305+00:00",
+  "model_path": "data\\model_registry\\c3265739.pkl",
+  "meta_path": "data\\model_registry\\c3265739_meta.json"
+}

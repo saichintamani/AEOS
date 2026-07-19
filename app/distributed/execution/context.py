@@ -109,6 +109,10 @@ class ExecutionContext:
 
     # Governance / observability
     token_id: str | None = None
+    # Raw compact JWT for cryptographic verification. Transient secret —
+    # deliberately excluded from CheckpointData so it is never persisted to
+    # disk or checkpoint stores. Populated by the worker from the task payload.
+    raw_token: str | None = None
     trace_id: str | None = None
     span_id: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)

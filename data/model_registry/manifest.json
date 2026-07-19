@@ -278,5 +278,165 @@
     "created_at": "2026-07-11T18:12:44.860786+00:00",
     "model_path": "data\\model_registry\\6d384570.pkl",
     "meta_path": "data\\model_registry\\6d384570_meta.json"
+  },
+  "ed546eb9": {
+    "model_id": "ed546eb9",
+    "name": "integration-test-model",
+    "algorithm": "random_forest",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-12T07:49:15.399470+00:00",
+    "model_path": "data\\model_registry\\ed546eb9.pkl",
+    "meta_path": "data\\model_registry\\ed546eb9_meta.json"
+  },
+  "c3265739": {
+    "model_id": "c3265739",
+    "name": "list-test-model",
+    "algorithm": "logistic_regression",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.5,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-12T07:49:15.612305+00:00",
+    "model_path": "data\\model_registry\\c3265739.pkl",
+    "meta_path": "data\\model_registry\\c3265739_meta.json"
+  },
+  "261b1718": {
+    "model_id": "261b1718",
+    "name": "integration-test-model",
+    "algorithm": "random_forest",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.5,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-12T07:52:52.267177+00:00",
+    "model_path": "data\\model_registry\\261b1718.pkl",
+    "meta_path": "data\\model_registry\\261b1718_meta.json"
+  },
+  "cf59a787": {
+    "model_id": "cf59a787",
+    "name": "list-test-model",
+    "algorithm": "logistic_regression",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.5,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-12T07:52:52.357852+00:00",
+    "model_path": "data\\model_registry\\cf59a787.pkl",
+    "meta_path": "data\\model_registry\\cf59a787_meta.json"
+  },
+  "d3a25cc5": {
+    "model_id": "d3a25cc5",
+    "name": "integration-test-model",
+    "algorithm": "random_forest",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-13T14:59:42.594526+00:00",
+    "model_path": "data\\model_registry\\d3a25cc5.pkl",
+    "meta_path": "data\\model_registry\\d3a25cc5_meta.json"
+  },
+  "926be104": {
+    "model_id": "926be104",
+    "name": "list-test-model",
+    "algorithm": "logistic_regression",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.5,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-13T14:59:46.075016+00:00",
+    "model_path": "data\\model_registry\\926be104.pkl",
+    "meta_path": "data\\model_registry\\926be104_meta.json"
+  },
+  "742b9398": {
+    "model_id": "742b9398",
+    "name": "integration-test-model",
+    "algorithm": "random_forest",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-13T15:03:56.792932+00:00",
+    "model_path": "data\\model_registry\\742b9398.pkl",
+    "meta_path": "data\\model_registry\\742b9398_meta.json"
+  },
+  "7cec083e": {
+    "model_id": "7cec083e",
+    "name": "list-test-model",
+    "algorithm": "logistic_regression",
+    "dataset_id": "686c000814ec6ce0",
+    "metrics": {
+      "task_type": "classification",
+      "accuracy": 0.5,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6667
+    },
+    "feature_names": [
+      "x1",
+      "x2"
+    ],
+    "created_at": "2026-07-13T15:03:56.974777+00:00",
+    "model_path": "data\\model_registry\\7cec083e.pkl",
+    "meta_path": "data\\model_registry\\7cec083e_meta.json"
   }
 }

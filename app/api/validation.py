@@ -15,25 +15,27 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/validation", tags=["Validation"])
 
 
-# ── Request / response models ─────────────────────────────────────────────────
+# ── Request / response models (strict + bounded) ──────────────────────────────
 
 class TransitionRequest(BaseModel):
-    machine: str          # e.g. "SM-TASK"
-    from_state: str       # e.g. "PENDING"
-    to_state: str         # e.g. "RUNNING"
-    event: str = ""
-    context: dict = {}
+    model_config = {"extra": "forbid"}
+    machine: str = Field(..., min_length=1, max_length=64)      # e.g. "SM-TASK"
+    from_state: str = Field(..., min_length=1, max_length=64)   # e.g. "PENDING"
+    to_state: str = Field(..., min_length=1, max_length=64)     # e.g. "RUNNING"
+    event: str = Field(default="", max_length=64)
+    context: dict = Field(default_factory=dict)
 
 
 class EvaluateRequest(BaseModel):
-    invariant_ids: list[str] | None = None   # None = all registered
+    model_config = {"extra": "forbid"}
+    invariant_ids: list[str] | None = Field(default=None, max_length=200)   # None = all registered
     raise_on_critical: bool = False
 
 
@@ -113,7 +115,7 @@ async def evaluate_invariants(request: Request, body: EvaluateRequest) -> JSONRe
 
 
 @router.get("/violations")
-async def violation_history(request: Request, limit: int = 50) -> JSONResponse:
+async def violation_history(request: Request, limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
     """Return recent invariant violation history."""
     engine = getattr(request.app.state, "invariant_engine", None)
     if engine is None:
