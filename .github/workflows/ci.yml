@@ -108,6 +108,7 @@ jobs:
           -v --tb=short \
           -x \
           --cov=app \
+          --cov=aeos \
           --cov=software_intelligence \
           --cov=ml_platform \
           --cov-report=xml \
