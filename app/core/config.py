@@ -56,6 +56,19 @@ class AEOSSettings(BaseSettings):
     # set WorkerRuntime(require_signed_tokens=...). Default False preserves the
     # in-process dev/test path; production distributed deployments set True.
     require_signed_tokens: bool = Field(default=False, description="Fail-closed: workers execute only tasks bearing a verifiable signed JWT")
+    # Cryptographic identity for the worker's TokenVerifier. The production
+    # bootstrap builds a KeyStore from these and threads a TokenVerifier into
+    # WorkerRuntime. In production profiles signed-token enforcement is forced on
+    # regardless of require_signed_tokens (see build_worker_runtime).
+    token_issuer: str = Field(default="aeos", description="Expected JWT `iss` claim; also the TokenSigner issuer")
+    token_keys_dir: str = Field(default="./data/keys", description="Directory holding signing key PEMs (KeyStore persistence)")
+    token_algorithm: str = Field(default="ES256", description="JWT signing algorithm: ES256 | RS256")
+    token_clock_skew_seconds: float = Field(default=30.0, description="Allowed clock skew when validating exp/iat")
+
+    # ── Worker runtime tuning ──────────────────────────────────────────────────
+    worker_max_in_flight: int = Field(default=16, description="Max concurrently executing tasks per worker node")
+    worker_queue_capacity: int = Field(default=128, description="Bounded task intake queue depth per worker node")
+    worker_heartbeat_interval_seconds: float = Field(default=10.0, description="Interval between worker heartbeat events")
 
     # ── Rate limiting (tiered, all configurable — no hardcoded thresholds) ─────
     # Requests per minute per client IP, by endpoint tier.
