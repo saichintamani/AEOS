@@ -1,0 +1,165 @@
+// proto/aeos/governance/v1/governance.proto
+//
+// AEOS Governance API — v1
+//
+// Defines message types for governance approval, audit logging, and
+// policy evaluation. The governance layer is the authoritative source
+// for task execution authorization — no task may run without a valid
+// governance token.
+//
+// Governance tokens are JWTs signed with RS256 or ES256 (P12A.1-3).
+// This service issues and verifies them.
+
+syntax = "proto3";
+
+package aeos.governance.v1;
+
+option go_package = "github.com/aeos/aeos-platform/gen/go/aeos/governance/v1;governancev1";
+option java_package = "io.aeos.governance.v1";
+option java_outer_classname = "GovernanceProto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ── Approval Request / Response ────────────────────────────────────────────
+
+// Submitted to the governance service to obtain an execution token.
+message ApprovalRequest {
+  // Unique ID for this request (UUID v4; idempotency key).
+  string request_id = 1;
+
+  // Task or workflow that requires approval.
+  string subject_id   = 2;
+  string subject_type = 3;   // "task" | "workflow" | "batch"
+
+  // Human or system requesting approval.
+  string requester_id = 4;
+
+  // Policy that must be satisfied (empty → default policy).
+  string policy_id = 5;
+
+  // Context passed to the policy evaluator.
+  google.protobuf.Struct context = 6;
+
+  // Requested token TTL in seconds (server may cap this).
+  uint32 ttl_seconds = 7;
+}
+
+// Result of a governance approval evaluation.
+enum ApprovalDecision {
+  APPROVAL_DECISION_UNSPECIFIED = 0;
+  APPROVAL_DECISION_APPROVED    = 1;
+  APPROVAL_DECISION_DENIED      = 2;
+  APPROVAL_DECISION_DEFERRED    = 3;   // Awaiting human review
+}
+
+// Returned by the governance service after policy evaluation.
+message ApprovalResponse {
+  string           request_id = 1;
+  ApprovalDecision decision   = 2;
+
+  // Signed JWT — populated only when decision=APPROVED.
+  // This token is placed in Task.governance_token.
+  string governance_token = 3;
+
+  // Reason for the decision (human-readable; included in audit log).
+  string reason = 4;
+
+  // Policy that was evaluated.
+  string policy_id = 5;
+
+  // When the token expires (echoed from JWT exp claim).
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+// ── Token Verification ─────────────────────────────────────────────────────
+
+message VerifyTokenRequest {
+  string governance_token = 1;
+
+  // Expected audience (must match JWT aud claim).
+  repeated string expected_audience = 2;
+}
+
+message VerifyTokenResponse {
+  bool   valid      = 1;
+  string subject_id = 2;
+  string issuer     = 3;
+  string policy_id  = 4;
+
+  // Why validation failed (empty when valid=true).
+  string failure_reason = 5;
+
+  google.protobuf.Timestamp issued_at  = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+// ── Token Revocation ───────────────────────────────────────────────────────
+
+message RevokeTokenRequest {
+  // JWT ID (jti claim) to revoke.
+  string jti = 1;
+
+  // Reason for revocation (audit).
+  string reason = 2;
+}
+
+message RevokeTokenResponse {
+  bool revoked = 1;
+}
+
+// ── Audit Log ──────────────────────────────────────────────────────────────
+
+// An immutable audit record emitted for every governance decision.
+message AuditRecord {
+  string           record_id   = 1;
+  string           request_id  = 2;
+  string           subject_id  = 3;
+  string           requester_id = 4;
+  ApprovalDecision decision    = 5;
+  string           policy_id   = 6;
+  string           reason      = 7;
+
+  google.protobuf.Timestamp decided_at = 8;
+
+  // Cluster that issued this record (for federation audit trails).
+  string issuing_cluster_id = 9;
+}
+
+// Query parameters for audit log retrieval.
+message AuditQueryRequest {
+  string subject_id    = 1;
+  string requester_id  = 2;
+  string policy_id     = 3;
+
+  google.protobuf.Timestamp since = 4;
+  google.protobuf.Timestamp until = 5;
+
+  uint32 limit  = 6;
+  string cursor = 7;
+}
+
+message AuditQueryResponse {
+  repeated AuditRecord records     = 1;
+  string               next_cursor = 2;
+  bool                 has_more    = 3;
+}
+
+// ── Governance Service ─────────────────────────────────────────────────────
+
+service GovernanceService {
+  // Request approval for a task / workflow execution.
+  rpc RequestApproval(ApprovalRequest) returns (ApprovalResponse);
+
+  // Verify a governance token (used by schedulers and workers).
+  rpc VerifyToken(VerifyTokenRequest) returns (VerifyTokenResponse);
+
+  // Revoke a previously-issued governance token.
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+
+  // Query the immutable audit log.
+  rpc QueryAuditLog(AuditQueryRequest) returns (AuditQueryResponse);
+
+  // Stream real-time governance events (for dashboards and SIEM).
+  rpc WatchGovernanceEvents(AuditQueryRequest) returns (stream AuditRecord);
+}

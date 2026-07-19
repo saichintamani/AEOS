@@ -1,0 +1,145 @@
+// proto/aeos/core/v1/worker.proto
+//
+// AEOS Worker Fleet API — v1
+//
+// Defines message types for worker registration, heartbeating, capability
+// advertising, and the bi-directional execution channel between the
+// scheduler and workers.
+
+syntax = "proto3";
+
+package aeos.core.v1;
+
+option go_package = "github.com/aeos/aeos-platform/gen/go/aeos/core/v1;corev1";
+option java_package = "io.aeos.core.v1";
+option java_outer_classname = "WorkerProto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "aeos/core/v1/task.proto";
+
+// ── Worker Identity ────────────────────────────────────────────────────────
+
+// Declared capabilities of a worker node.
+message WorkerCapabilities {
+  // Task types this worker can execute.
+  repeated string supported_task_types = 1;
+
+  // Maximum concurrent tasks.
+  uint32 max_concurrency = 2;
+
+  // Available GPU (0 if CPU-only).
+  uint32 gpu_count = 3;
+
+  // RAM available in MiB.
+  uint64 memory_mib = 4;
+
+  // Arbitrary key-value labels for policy-based placement.
+  map<string, string> labels = 5;
+}
+
+// Lifecycle state of a worker.
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  WORKER_STATUS_STARTING    = 1;
+  WORKER_STATUS_IDLE        = 2;
+  WORKER_STATUS_BUSY        = 3;
+  WORKER_STATUS_DRAINING    = 4;   // Accepting no new tasks; finishing current ones
+  WORKER_STATUS_OFFLINE     = 5;
+}
+
+// ── Registration ───────────────────────────────────────────────────────────
+
+// Sent by a worker on startup to join the scheduler's fleet.
+message RegisterWorkerRequest {
+  string              worker_id    = 1;
+  string              node_address = 2;   // host:port the worker listens on
+  WorkerCapabilities  capabilities = 3;
+  WorkerStatus        initial_status = 4;
+
+  // Software version (semver) — used for compatibility gating.
+  string version = 5;
+}
+
+message RegisterWorkerResponse {
+  // Scheduler-assigned cluster member ID (may differ from worker_id in federation).
+  string cluster_member_id = 1;
+
+  // Heartbeat interval the scheduler expects.
+  google.protobuf.Duration heartbeat_interval = 2;
+
+  // Maximum tasks the scheduler will dispatch to this worker simultaneously.
+  uint32 dispatch_concurrency_limit = 3;
+}
+
+// ── Heartbeat ──────────────────────────────────────────────────────────────
+
+message WorkerHeartbeat {
+  string       worker_id   = 1;
+  WorkerStatus status      = 2;
+
+  // Number of tasks currently executing.
+  uint32 active_task_count = 3;
+
+  // CPU utilisation 0.0–1.0.
+  float cpu_utilization = 4;
+
+  // Memory utilisation 0.0–1.0.
+  float memory_utilization = 5;
+
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message HeartbeatResponse {
+  // Echo back for clock skew detection.
+  google.protobuf.Timestamp server_time = 1;
+
+  // Optional directive from the scheduler.
+  WorkerDirective directive = 2;
+}
+
+// Directive issued by the scheduler in a heartbeat response.
+enum WorkerDirective {
+  WORKER_DIRECTIVE_NONE    = 0;
+  WORKER_DIRECTIVE_DRAIN   = 1;   // Stop accepting new tasks
+  WORKER_DIRECTIVE_SHUTDOWN = 2;  // Finish current tasks then exit
+}
+
+// ── Deregistration ─────────────────────────────────────────────────────────
+
+message DeregisterWorkerRequest {
+  string worker_id = 1;
+  string reason    = 2;
+}
+
+message DeregisterWorkerResponse {
+  bool acknowledged = 1;
+}
+
+// ── Execution Channel ──────────────────────────────────────────────────────
+
+// A worker sends TaskUpdate messages upstream on the execution stream.
+message TaskUpdate {
+  oneof update {
+    TaskProgress progress = 1;
+    TaskResult   result   = 2;
+  }
+}
+
+// ── Worker Service ─────────────────────────────────────────────────────────
+
+// Hosted by the AEOS scheduler; workers connect to it.
+service WorkerService {
+  // Worker registers with the scheduler fleet.
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+
+  // Bidirectional execution stream: scheduler sends Tasks, worker sends TaskUpdates.
+  // The stream persists for the worker's lifetime.
+  rpc ExecutionStream(stream TaskUpdate) returns (stream Task);
+
+  // Periodic health signal from worker to scheduler.
+  rpc SendHeartbeat(WorkerHeartbeat) returns (HeartbeatResponse);
+
+  // Graceful deregistration.
+  rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
+}

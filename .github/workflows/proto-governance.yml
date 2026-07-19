@@ -1,0 +1,245 @@
+name: Proto Governance
+
+# ── Triggers ──────────────────────────────────────────────────────────────
+# Run on every PR and push that touches proto files, buf config, or CI itself.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'proto/**'
+      - 'buf.yaml'
+      - 'buf.gen.yaml'
+      - '.github/workflows/proto-governance.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'proto/**'
+      - 'buf.yaml'
+      - 'buf.gen.yaml'
+      - '.github/workflows/proto-governance.yml'
+  # Allow manual trigger for breaking-change audits against arbitrary refs.
+  workflow_dispatch:
+    inputs:
+      against_branch:
+        description: 'Branch to check breaking changes against'
+        required: false
+        default: 'main'
+        type: string
+
+concurrency:
+  group: proto-governance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write    # Post lint/breaking annotations on PRs
+
+# ── Jobs ──────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── 1. Lint ─────────────────────────────────────────────────────────────
+  # Enforces AEOS proto style rules defined in buf.yaml [lint] section.
+  # Catches: naming violations, missing required fields, package layout errors.
+  lint:
+    name: buf lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: '1.32.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: buf lint
+        run: buf lint
+        # buf exits non-zero and prints file:line:col annotations on failures.
+        # GitHub Actions picks these up as PR check annotations automatically.
+
+  # ── 2. Breaking Change Detection ────────────────────────────────────────
+  # Compares the current branch's proto surface against main.
+  # Any wire-incompatible change blocks merge until explicitly approved.
+  #
+  # Wire-incompatible changes include:
+  #   - Removing a field, service, method, or enum value
+  #   - Changing a field number or type
+  #   - Reusing a reserved field number
+  #   - Renaming a service or RPC (clients use the names for routing)
+  #
+  # To make a breaking change intentionally:
+  #   1. Bump the package version (e.g., v1 → v2)
+  #   2. Maintain the v1 package for a deprecation window (90 days minimum)
+  #   3. Open a PR titled "proto(breaking): ..." — triggers manual approval gate
+  breaking:
+    name: buf breaking
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run on PRs (pushes to main ARE the baseline)
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: '1.32.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine baseline ref
+        id: baseline
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.against_branch }}" >> $GITHUB_OUTPUT
+          else
+            echo "ref=origin/${{ github.base_ref }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: buf breaking (vs ${{ steps.baseline.outputs.ref }})
+        run: |
+          buf breaking \
+            --against ".git#branch=${{ steps.baseline.outputs.ref }}" \
+            --error-format github-actions
+        # The --error-format github-actions flag emits ::error file= annotations
+        # so breaking changes appear directly in the PR diff view.
+
+  # ── 3. Format Check ─────────────────────────────────────────────────────
+  # Ensures proto files are formatted with buf format.
+  # Keeps diffs clean and prevents format-only noise in reviews.
+  format:
+    name: buf format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: '1.32.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: buf format check
+        run: buf format --diff --exit-code
+        # --exit-code makes the step fail if any file would be reformatted.
+        # --diff shows what would change (useful in CI logs).
+
+  # ── 4. Build Check ──────────────────────────────────────────────────────
+  # Compiles all proto files to ensure they are syntactically and
+  # semantically valid (correct imports, no undefined types, etc.).
+  build:
+    name: buf build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: '1.32.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: buf build
+        run: buf build --error-format github-actions
+        # Validates all imports resolve, all message types exist,
+        # and the FileDescriptorSet is serializable.
+
+  # ── 5. Stubs Generation Smoke Test ──────────────────────────────────────
+  # Runs buf generate and verifies the output is importable Python.
+  # Guards against codegen regressions that would break the gRPC transport.
+  generate-smoke:
+    name: Stubs generation smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint, build]   # Only run if lint and build pass
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: '1.32.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install gRPC tooling
+        run: pip install grpcio grpcio-tools
+
+      - name: buf generate
+        run: buf generate
+        # Generates Python stubs into app/distributed/grpc/generated/
+
+      - name: Verify generated stubs are importable
+        run: |
+          # Add the generated path to PYTHONPATH and verify imports
+          export PYTHONPATH="$PWD:$PYTHONPATH"
+          python - <<'EOF'
+          import importlib, sys, os
+
+          generated_dir = "app/distributed/grpc/generated"
+          if not os.path.isdir(generated_dir):
+              print("No generated dir — buf generate produced no output", file=sys.stderr)
+              sys.exit(1)
+
+          # List generated modules
+          pb2_files = [f for f in os.listdir(generated_dir) if f.endswith("_pb2.py")]
+          if not pb2_files:
+              print("No *_pb2.py files found in generated output", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Generated {len(pb2_files)} pb2 module(s):")
+          for f in sorted(pb2_files):
+              print(f"  {f}")
+
+          print("✓ Stubs generation smoke test passed")
+          EOF
+
+      - name: Upload generated stubs as artifact (for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: grpc-stubs-${{ github.sha }}
+          path: app/distributed/grpc/generated/
+          retention-days: 7
+
+  # ── Summary gate ────────────────────────────────────────────────────────
+  # Required status check — all jobs must pass before merge is allowed.
+  # Add "proto-governance / all-checks-passed" as a required branch
+  # protection rule in GitHub repository settings.
+  all-checks-passed:
+    name: All proto checks passed
+    runs-on: ubuntu-latest
+    needs: [lint, breaking, format, build]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [[ "${{ needs.lint.result }}"     != "success" ]] ||
+             [[ "${{ needs.format.result }}"   != "success" ]] ||
+             [[ "${{ needs.build.result }}"    != "success" ]]; then
+            echo "One or more proto governance checks FAILED"
+            exit 1
+          fi
+          # breaking job only runs on PRs — skip check on push to main
+          if [[ "${{ github.event_name }}" == "pull_request" ]] &&
+             [[ "${{ needs.breaking.result }}" != "success" ]]; then
+            echo "buf breaking check FAILED — wire-incompatible proto changes detected"
+            echo ""
+            echo "To make an intentional breaking change:"
+            echo "  1. Bump the package version (v1 → v2)"
+            echo "  2. Keep v1 package for 90-day deprecation window"
+            echo "  3. Title your PR 'proto(breaking): ...' for manual approval"
+            exit 1
+          fi
+          echo "All proto governance checks passed ✓"

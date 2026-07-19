@@ -1,0 +1,49 @@
+# buf.gen.yaml
+#
+# buf code generation configuration for AEOS Platform.
+#
+# Run: `buf generate`
+#
+# Generates Python gRPC stubs into app/distributed/grpc/generated/
+# for use by the production gRPC transport layer (grpc_channel.py).
+#
+# Prerequisites:
+#   pip install grpcio grpcio-tools grpc-stubs
+#   OR use the managed buf plugins (no local protoc needed):
+#   buf generate --template buf.gen.yaml
+
+version: v1
+
+# ── Managed mode ───────────────────────────────────────────────────────────
+# buf manages protoc and plugin versions — no local protoc installation needed.
+managed:
+  enabled: true
+  optimize_for: SPEED
+
+  override:
+    JAVA_PACKAGE:
+      # Override the java_package option for all files
+      aeos/core/v1/task.proto:        io.aeos.core.v1
+      aeos/core/v1/worker.proto:      io.aeos.core.v1
+      aeos/governance/v1/governance.proto: io.aeos.governance.v1
+      aeos/federation/v1/federation.proto: io.aeos.federation.v1
+      aeos/observability/v1/observability.proto: io.aeos.observability.v1
+
+# ── Plugins ────────────────────────────────────────────────────────────────
+plugins:
+  # Python protobuf message classes
+  - plugin: buf.build/protocolbuffers/python:v24.4
+    out: app/distributed/grpc/generated
+
+  # Python gRPC service stubs
+  - plugin: buf.build/grpc/python:v1.59.0
+    out: app/distributed/grpc/generated
+
+  # Python type stubs (for mypy compatibility)
+  - plugin: buf.build/grpc/python:v1.59.0
+    out: app/distributed/grpc/generated
+    strategy: all
+
+# ── Inputs ────────────────────────────────────────────────────────────────
+# buf generate reads from buf.yaml (the module root).
+# All .proto files in proto/ are included automatically.

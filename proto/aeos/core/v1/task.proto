@@ -1,0 +1,213 @@
+// proto/aeos/core/v1/task.proto
+//
+// AEOS Task Scheduling API — v1
+//
+// Defines the canonical message types for task scheduling, dispatch, and
+// result reporting across the AEOS worker fleet.
+//
+// Governance: all breaking changes require a version bump (v1 → v2).
+// Lint:       enforced by `buf lint` in CI (proto-governance.yml).
+
+syntax = "proto3";
+
+package aeos.core.v1;
+
+option go_package = "github.com/aeos/aeos-platform/gen/go/aeos/core/v1;corev1";
+option java_package = "io.aeos.core.v1";
+option java_outer_classname = "TaskProto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ── Task Definition ────────────────────────────────────────────────────────
+
+// A unit of work dispatched to a worker by the AEOS scheduler.
+message Task {
+  // Unique task identifier (UUID v4).
+  string task_id = 1;
+
+  // Workflow this task belongs to (empty for standalone tasks).
+  string workflow_id = 2;
+
+  // Human-readable task type (e.g., "code-review", "data-ingestion").
+  string task_type = 3;
+
+  // Worker that owns this task (assigned by scheduler).
+  string assigned_worker_id = 4;
+
+  // Governance approval token — MUST be present for execution.
+  // This is the JWT issued by the AEOS governance layer (RS256/ES256).
+  string governance_token = 5;
+
+  // Task priority (0 = highest, 100 = lowest; default 50).
+  uint32 priority = 6;
+
+  // Arbitrary task payload (schema is task_type-specific).
+  google.protobuf.Struct payload = 7;
+
+  // Wall-clock deadline for completion (optional; 0 = no deadline).
+  google.protobuf.Timestamp deadline = 8;
+
+  // Retry configuration.
+  RetryPolicy retry_policy = 9;
+
+  // Metadata set by the workflow engine (not interpreted by workers).
+  map<string, string> metadata = 10;
+}
+
+// Retry behaviour for a task.
+message RetryPolicy {
+  // Maximum number of attempts (including the first try).
+  uint32 max_attempts = 1;
+
+  // Base backoff in milliseconds (doubles on each retry).
+  uint32 backoff_ms = 2;
+
+  // Maximum backoff in milliseconds (caps the exponential growth).
+  uint32 max_backoff_ms = 3;
+
+  // Jitter fraction applied to backoff (0.0–1.0).
+  float jitter = 4;
+}
+
+// ── Task Status ────────────────────────────────────────────────────────────
+
+// Lifecycle state of a task.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING     = 1;
+  TASK_STATUS_ASSIGNED    = 2;
+  TASK_STATUS_RUNNING     = 3;
+  TASK_STATUS_SUCCEEDED   = 4;
+  TASK_STATUS_FAILED      = 5;
+  TASK_STATUS_CANCELLED   = 6;
+  TASK_STATUS_TIMED_OUT   = 7;
+}
+
+// Progress report emitted by a worker during task execution.
+message TaskProgress {
+  string task_id   = 1;
+  string worker_id = 2;
+
+  // Completion percentage (0–100).
+  uint32 percent_complete = 3;
+
+  // Human-readable status message.
+  string message = 4;
+
+  google.protobuf.Timestamp reported_at = 5;
+}
+
+// Final result emitted by a worker on task completion or failure.
+message TaskResult {
+  string task_id   = 1;
+  string worker_id = 2;
+
+  TaskStatus status = 3;
+
+  // Arbitrary output payload (schema is task_type-specific).
+  google.protobuf.Struct output = 4;
+
+  // Error detail on failure.
+  TaskError error = 5;
+
+  // Execution timing.
+  google.protobuf.Timestamp started_at   = 6;
+  google.protobuf.Timestamp completed_at = 7;
+
+  // Attempt number (1-based).
+  uint32 attempt = 8;
+}
+
+// Error detail attached to a failed task result.
+message TaskError {
+  // Machine-readable error code.
+  string code = 1;
+
+  // Human-readable message.
+  string message = 2;
+
+  // Whether this error is retryable.
+  bool retryable = 3;
+
+  // Additional context as key-value pairs.
+  map<string, string> details = 4;
+}
+
+// ── Scheduler Service ──────────────────────────────────────────────────────
+
+// Request to schedule a new task.
+message ScheduleTaskRequest {
+  Task task = 1;
+
+  // If true, the server validates the governance_token and rejects
+  // the request if it is absent, expired, or revoked.
+  bool require_governance = 2;
+}
+
+// Response after scheduling a task.
+message ScheduleTaskResponse {
+  // Echoes back the task_id for correlation.
+  string task_id = 1;
+
+  // Worker the task was dispatched to.
+  string assigned_worker_id = 2;
+
+  // Position in the worker's queue (informational).
+  uint32 queue_position = 3;
+
+  // Estimated start time (server estimate; not a guarantee).
+  google.protobuf.Timestamp estimated_start = 4;
+}
+
+// Request to cancel an in-flight or pending task.
+message CancelTaskRequest {
+  string task_id = 1;
+
+  // Reason for cancellation (logged for audit).
+  string reason = 2;
+
+  // If true, cancel even if the task is already RUNNING.
+  bool force = 3;
+}
+
+message CancelTaskResponse {
+  string    task_id     = 1;
+  TaskStatus prev_status = 2;
+  bool      cancelled   = 3;
+}
+
+// Request to query a task's current state.
+message GetTaskStatusRequest {
+  string task_id = 1;
+}
+
+message GetTaskStatusResponse {
+  string     task_id   = 1;
+  TaskStatus status    = 2;
+  string     worker_id = 3;
+
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+
+  // Latest progress report (if any).
+  TaskProgress latest_progress = 6;
+
+  // Result (populated when status is SUCCEEDED or FAILED).
+  TaskResult result = 7;
+}
+
+// AEOS Scheduler Service — the primary entry point for task dispatch.
+service SchedulerService {
+  // Schedule a task for execution on the worker fleet.
+  rpc ScheduleTask(ScheduleTaskRequest) returns (ScheduleTaskResponse);
+
+  // Cancel a pending or running task.
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+  // Query the current status of a task.
+  rpc GetTaskStatus(GetTaskStatusRequest) returns (GetTaskStatusResponse);
+
+  // Stream live status updates for a task.
+  rpc WatchTask(GetTaskStatusRequest) returns (stream TaskProgress);
+}

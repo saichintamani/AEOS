@@ -1,0 +1,122 @@
+// proto/aeos/observability/v1/observability.proto
+//
+// AEOS Observability API — v1
+//
+// Defines message types for distributed tracing, structured events, and
+// real-time metrics streaming. Consumed by the RuntimeGraph and
+// DistributedTimeline layers (P12A.3).
+
+syntax = "proto3";
+
+package aeos.observability.v1;
+
+option go_package = "github.com/aeos/aeos-platform/gen/go/aeos/observability/v1;observabilityv1";
+option java_package = "io.aeos.observability.v1";
+option java_outer_classname = "ObservabilityProto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ── Span / Trace ───────────────────────────────────────────────────────────
+
+// A single distributed trace span.
+message Span {
+  string trace_id   = 1;
+  string span_id    = 2;
+  string parent_span_id = 3;   // Empty for root span
+
+  string operation_name = 4;
+  string service_name   = 5;
+
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp end_time   = 7;
+
+  SpanStatus status = 8;
+  map<string, string> tags = 9;
+
+  repeated SpanLog logs = 10;
+}
+
+enum SpanStatus {
+  SPAN_STATUS_UNSPECIFIED = 0;
+  SPAN_STATUS_OK          = 1;
+  SPAN_STATUS_ERROR       = 2;
+}
+
+// A structured log entry attached to a span.
+message SpanLog {
+  google.protobuf.Timestamp timestamp = 1;
+  string                    level     = 2;
+  string                    message   = 3;
+  map<string, string>       fields    = 4;
+}
+
+// ── Structured Event ───────────────────────────────────────────────────────
+
+// An audit/observability event emitted by any AEOS component.
+message StructuredEvent {
+  string event_id   = 1;
+  string event_type = 2;
+
+  // Component that emitted the event (service, worker, scheduler, etc.)
+  string source = 3;
+
+  // Entity the event is about (task_id, worker_id, cluster_id, …)
+  string subject_id   = 4;
+  string subject_type = 5;
+
+  google.protobuf.Timestamp occurred_at = 6;
+  google.protobuf.Struct    payload     = 7;
+
+  // Causal parent event (for distributed timeline reconstruction).
+  string caused_by_event_id = 8;
+
+  // Vector clock snapshot for causal ordering.
+  map<string, uint64> vector_clock = 9;
+}
+
+// ── Metrics ────────────────────────────────────────────────────────────────
+
+// A single metric data point (Prometheus-style).
+message MetricPoint {
+  string metric_name  = 1;
+  double value        = 2;
+  map<string, string> labels = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// ── Service ────────────────────────────────────────────────────────────────
+
+message SubmitSpansRequest {
+  repeated Span spans = 1;
+}
+message SubmitSpansResponse {
+  uint32 accepted = 1;
+  uint32 rejected = 2;
+}
+
+message SubmitEventsRequest {
+  repeated StructuredEvent events = 1;
+}
+message SubmitEventsResponse {
+  uint32 accepted = 1;
+}
+
+message WatchEventsRequest {
+  // Filter by event types (empty = all).
+  repeated string event_types = 1;
+
+  // Filter by subject type.
+  string subject_type = 2;
+}
+
+service ObservabilityService {
+  // Submit distributed trace spans.
+  rpc SubmitSpans(SubmitSpansRequest) returns (SubmitSpansResponse);
+
+  // Submit structured audit / observability events.
+  rpc SubmitEvents(SubmitEventsRequest) returns (SubmitEventsResponse);
+
+  // Stream live events to dashboard consumers.
+  rpc WatchEvents(WatchEventsRequest) returns (stream StructuredEvent);
+}

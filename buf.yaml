@@ -1,0 +1,56 @@
+# buf.yaml
+#
+# buf module configuration for AEOS Platform proto definitions.
+#
+# Docs: https://buf.build/docs/configuration/v1/buf-yaml
+#
+# Lint:     `buf lint`
+# Breaking: `buf breaking --against '.git#branch=main'`
+# Generate: `buf generate`
+
+version: v1
+
+# Module name — used for the Buf Schema Registry (BSR) if published.
+name: buf.build/aeos/aeos-platform
+
+# External dependencies.
+deps:
+  # Google standard well-known types (Timestamp, Duration, Struct, etc.)
+  - buf.build/googleapis/googleapis
+
+# ── Lint configuration ─────────────────────────────────────────────────────
+lint:
+  use:
+    - DEFAULT   # Includes: BASIC, COMMENTS, FILE_LAYOUT, PACKAGE_AFFINITY,
+                #           SENSIBLE, STYLE_BASIC, STYLE_DEFAULT
+  except:
+    # Allow missing file-level package comments (handled in module headers).
+    - COMMENT_FILE
+
+  # Proto package → directory path mapping must be consistent.
+  # e.g., package aeos.core.v1 must live in aeos/core/v1/
+  enum_zero_value_suffix: _UNSPECIFIED
+
+  # All RPCs must have request/response suffixes.
+  rpc_allow_same_request_response: false
+  rpc_allow_google_protobuf_empty_requests: false
+  rpc_allow_google_protobuf_empty_responses: false
+
+  # Ignore generated files.
+  ignore_only:
+    COMMENT_FIELD:
+      - aeos/core/v1/task.proto
+
+# ── Breaking change detection ───────────────────────────────────────────────
+breaking:
+  use:
+    - FILE   # Strictest: any wire-incompatible change fails CI.
+             # Covers: field removal, type change, field number reuse,
+             #         service/method removal, enum value removal.
+
+  # Exceptions: changes within these categories are allowed without
+  # a version bump. (Currently none — all breaking changes require v2.)
+  except: []
+
+  # Ignore added fields/services (additions are backward-compatible).
+  ignore_unstable_packages: false
