@@ -41,6 +41,7 @@ from app.distributed.capability.federation import (
 from app.distributed.cluster.manager import ClusterMemberManager
 from app.distributed.cluster.membership import InMemoryMembershipStore
 from app.distributed.consensus.raft import RaftNode, RaftRole
+from app.distributed.consensus.recovery import RaftPersistence, integrate_with_raft_node
 from app.distributed.contracts.cluster import (
     ClusterMemberState,
     MemberRecord,
@@ -141,6 +142,7 @@ class MultiNodeCluster:
         node_configs: list[NodeConfig] | None = None,
         heartbeat_interval_s: float = 5.0,
         election_timeout_factor: float = 1.0,
+        raft_data_dir: str | None = None,
     ) -> None:
         if node_count < 1:
             raise ValueError("node_count must be >= 1")
@@ -173,8 +175,12 @@ class MultiNodeCluster:
         # Raft RPC routing table: node_id → RaftNode
         self._raft_nodes: dict[str, RaftNode] = {}
 
+        # When set, each RaftNode gets a durable WAL under <raft_data_dir>/<node_id>/
+        self._raft_data_dir = raft_data_dir
+
         self._running = False
         self._raft_tasks: list[asyncio.Task] = []
+        self._raft_persistence: dict[str, RaftPersistence] = {}
 
     # ── Context manager ───────────────────────────────────────────────────────
 
@@ -214,6 +220,30 @@ class MultiNodeCluster:
                 peers=peers,
                 rpc_send=_rpc,
             )
+            # Wire WAL persistence when a data directory is configured.
+            # Without this call, RaftNode operates on in-memory state only and
+            # loses all consensus state on restart (CRIT-001 / LONGEVITY-001).
+            if self._raft_data_dir:
+                import os
+                node_dir = os.path.join(self._raft_data_dir, cfg.node_id)
+                persistence = RaftPersistence(
+                    data_dir=node_dir,
+                    node_id=cfg.node_id,
+                    cluster_id="aeos-cluster",
+                )
+                result = persistence.recover()
+                if result.success:
+                    # Restore durable term and log to the in-memory RaftState
+                    raft._state.current_term = result.current_term
+                    raft._state.voted_for = result.voted_for
+                    if result.commit_index >= 0:
+                        raft._state.commit_index = result.commit_index
+                    logger.info(
+                        "Raft recovery: node=%s term=%d log_entries=%d",
+                        cfg.node_id, result.current_term, result.log_entries_recovered,
+                    )
+                integrate_with_raft_node(raft, persistence)
+                self._raft_persistence[cfg.node_id] = persistence
             self._raft_nodes[cfg.node_id] = raft
 
         # Start Raft nodes and register members concurrently

@@ -1,0 +1,258 @@
+## docker-compose.redis-cluster.yml
+##
+## Local Redis Cluster (6 nodes: 3 primaries + 3 replicas)
+## Mimics ElastiCache Cluster mode for local development and integration tests.
+##
+## Usage:
+##   docker-compose -f docker-compose.redis-cluster.yml up -d
+##   docker-compose -f docker-compose.redis-cluster.yml exec redis-1 \
+##     redis-cli --cluster create \
+##       redis-1:7001 redis-2:7002 redis-3:7003 \
+##       redis-4:7004 redis-5:7005 redis-6:7006 \
+##       --cluster-replicas 1 --cluster-yes
+##
+## Hash slot distribution (auto-assigned by redis-cli --cluster create):
+##   redis-1 (primary): slots 0-5460
+##   redis-2 (primary): slots 5461-10922
+##   redis-3 (primary): slots 10923-16383
+##   redis-4 (replica of redis-1)
+##   redis-5 (replica of redis-2)
+##   redis-6 (replica of redis-3)
+##
+## AEOS key hash tags:
+##   {aeos:lease}       → deterministic shard via hash tag
+##   {aeos:checkpoint}  → deterministic shard via hash tag
+##   {aeos:cluster}     → deterministic shard via hash tag
+
+version: "3.9"
+
+x-redis-cluster-node: &redis-node
+  image: redis:7.2-alpine
+  restart: unless-stopped
+  sysctls:
+    net.core.somaxconn: 1024
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+
+networks:
+  redis-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  redis-1:
+    <<: *redis-node
+    container_name: aeos-redis-1
+    ports:
+      - "7001:7001"
+      - "17001:17001"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.11
+    command: >
+      redis-server
+      --port 7001
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.11
+      --cluster-announce-port 7001
+      --cluster-announce-bus-port 17001
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --notify-keyspace-events Ex
+      --lazyfree-lazy-eviction yes
+      --activedefrag yes
+      --save 60 1000
+    volumes:
+      - redis-1-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7001", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-2:
+    <<: *redis-node
+    container_name: aeos-redis-2
+    ports:
+      - "7002:7002"
+      - "17002:17002"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.12
+    command: >
+      redis-server
+      --port 7002
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.12
+      --cluster-announce-port 7002
+      --cluster-announce-bus-port 17002
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --notify-keyspace-events Ex
+      --lazyfree-lazy-eviction yes
+      --activedefrag yes
+      --save 60 1000
+    volumes:
+      - redis-2-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7002", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-3:
+    <<: *redis-node
+    container_name: aeos-redis-3
+    ports:
+      - "7003:7003"
+      - "17003:17003"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.13
+    command: >
+      redis-server
+      --port 7003
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.13
+      --cluster-announce-port 7003
+      --cluster-announce-bus-port 17003
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --notify-keyspace-events Ex
+      --lazyfree-lazy-eviction yes
+      --activedefrag yes
+      --save 60 1000
+    volumes:
+      - redis-3-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7003", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-4:
+    <<: *redis-node
+    container_name: aeos-redis-4
+    ports:
+      - "7004:7004"
+      - "17004:17004"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.14
+    command: >
+      redis-server
+      --port 7004
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.14
+      --cluster-announce-port 7004
+      --cluster-announce-bus-port 17004
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --lazyfree-lazy-eviction yes
+    volumes:
+      - redis-4-data:/data
+
+  redis-5:
+    <<: *redis-node
+    container_name: aeos-redis-5
+    ports:
+      - "7005:7005"
+      - "17005:17005"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.15
+    command: >
+      redis-server
+      --port 7005
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.15
+      --cluster-announce-port 7005
+      --cluster-announce-bus-port 17005
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --lazyfree-lazy-eviction yes
+    volumes:
+      - redis-5-data:/data
+
+  redis-6:
+    <<: *redis-node
+    container_name: aeos-redis-6
+    ports:
+      - "7006:7006"
+      - "17006:17006"
+    networks:
+      redis-cluster:
+        ipv4_address: 172.30.0.16
+    command: >
+      redis-server
+      --port 7006
+      --cluster-enabled yes
+      --cluster-config-file nodes.conf
+      --cluster-node-timeout 15000
+      --cluster-announce-ip 172.30.0.16
+      --cluster-announce-port 7006
+      --cluster-announce-bus-port 17006
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --lazyfree-lazy-eviction yes
+    volumes:
+      - redis-6-data:/data
+
+  ## One-shot cluster bootstrap container
+  ## Runs redis-cli --cluster create and exits
+  redis-cluster-init:
+    image: redis:7.2-alpine
+    container_name: aeos-redis-cluster-init
+    depends_on:
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+    networks:
+      - redis-cluster
+    command: >
+      sh -c "
+        echo 'Waiting for all nodes...' &&
+        sleep 5 &&
+        redis-cli --cluster create
+          172.30.0.11:7001
+          172.30.0.12:7002
+          172.30.0.13:7003
+          172.30.0.14:7004
+          172.30.0.15:7005
+          172.30.0.16:7006
+          --cluster-replicas 1
+          --cluster-yes &&
+        echo 'Redis Cluster initialized successfully'
+      "
+    restart: "no"
+
+volumes:
+  redis-1-data:
+  redis-2-data:
+  redis-3-data:
+  redis-4-data:
+  redis-5-data:
+  redis-6-data:

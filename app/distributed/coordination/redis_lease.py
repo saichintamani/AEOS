@@ -13,6 +13,12 @@ Design:
   - Lease value = JSON {holder_id, acquired_at, metadata}
   - Clock drift: TTL padded by CLOCK_DRIFT_ALLOWANCE_S to tolerate skew
   - Split-brain: fencing tokens (monotonically increasing int stored alongside)
+
+DRIFT-001 fix (P12A.1):
+  - Uses create_redis_client() factory which supports RedisCluster mode
+  - All lease keys use {aeos:lease} hash tag for cluster shard co-location
+  - Lua scripts work correctly in cluster mode (all keys share same slot)
+  - Set AEOS_REDIS_MODE=cluster to enable cluster mode
 """
 
 from __future__ import annotations
@@ -23,11 +29,12 @@ import time
 from typing import Any
 
 from app.distributed.contracts.coordination import LeaseRecord, LeaseStore
+from app.distributed.coordination.redis_client import create_redis_client, redis_key, RedisNamespace
 
 logger = logging.getLogger(__name__)
 
 _CLOCK_DRIFT_S = 2    # extra seconds added to TTL to tolerate NTP drift
-_FENCING_KEY_SUFFIX = ":fence"
+_FENCING_SUFFIX = ":fence"
 
 
 def _require_redis() -> Any:
@@ -75,19 +82,27 @@ class RedisLeaseStore(LeaseStore):
         lease = await store.acquire("my-key", "worker-1", ttl_seconds=30)
     """
 
-    def __init__(self, url: str = "redis://localhost:6379/0") -> None:
+    def __init__(
+        self,
+        url: str = "redis://localhost:6379/0",
+        cluster_mode: bool | None = None,
+    ) -> None:
         self._url = url
+        self._cluster_mode = cluster_mode
         self._redis: Any = None
         self._renew_sha: str | None = None
         self._release_sha: str | None = None
 
     async def connect(self) -> None:
-        aioredis = _require_redis()
-        self._redis = aioredis.from_url(self._url, decode_responses=False)
+        # Use cluster-aware factory (resolves DRIFT-001)
+        self._redis = await create_redis_client(
+            self._url, cluster_mode=self._cluster_mode, decode_responses=False
+        )
         # Pre-load Lua scripts
         self._renew_sha = await self._redis.script_load(_RENEW_SCRIPT)
         self._release_sha = await self._redis.script_load(_RELEASE_SCRIPT)
-        logger.info("RedisLeaseStore: connected to %s", self._url)
+        logger.info("RedisLeaseStore: connected to %s (cluster=%s)",
+                    self._url, self._cluster_mode)
 
     async def disconnect(self) -> None:
         if self._redis:
@@ -110,15 +125,16 @@ class RedisLeaseStore(LeaseStore):
             "metadata": metadata or {},
         }).encode()
         effective_ttl = ttl_seconds + _CLOCK_DRIFT_S
+        # Use cluster-safe key with hash tag
+        rkey = redis_key(RedisNamespace.LEASE, lease_key).encode()
         # NX = only set if Not eXists; EX = expiry in seconds
-        ok = await self._redis.set(
-            lease_key.encode(), value, nx=True, ex=effective_ttl
-        )
+        ok = await self._redis.set(rkey, value, nx=True, ex=effective_ttl)
         if not ok:
             return None
 
-        # Increment fencing token
-        fence = await self._redis.incr((lease_key + _FENCING_KEY_SUFFIX).encode())
+        # Increment fencing token (same hash tag = same shard)
+        fence_rkey = redis_key(RedisNamespace.LEASE, lease_key + _FENCING_SUFFIX).encode()
+        fence = await self._redis.incr(fence_rkey)
         logger.debug(
             "RedisLeaseStore: acquired '%s' by '%s' (ttl=%ds fence=%d)",
             lease_key, holder_id, effective_ttl, fence,
@@ -138,10 +154,11 @@ class RedisLeaseStore(LeaseStore):
         ttl_seconds: int = 120,
     ) -> bool:
         self._ensure_connected()
+        rkey = redis_key(RedisNamespace.LEASE, lease_key).encode()
         result = await self._redis.evalsha(
             self._renew_sha,
             1,
-            lease_key.encode(),
+            rkey,
             holder_id.encode(),
             str(ttl_seconds + _CLOCK_DRIFT_S).encode(),
         )
@@ -151,10 +168,11 @@ class RedisLeaseStore(LeaseStore):
 
     async def release(self, lease_key: str, holder_id: str) -> bool:
         self._ensure_connected()
+        rkey = redis_key(RedisNamespace.LEASE, lease_key).encode()
         result = await self._redis.evalsha(
             self._release_sha,
             1,
-            lease_key.encode(),
+            rkey,
             holder_id.encode(),
         )
         if result:
@@ -163,7 +181,7 @@ class RedisLeaseStore(LeaseStore):
 
     async def get(self, lease_key: str) -> LeaseRecord | None:
         self._ensure_connected()
-        raw = await self._redis.get(lease_key.encode())
+        raw = await self._redis.get(redis_key(RedisNamespace.LEASE, lease_key).encode())
         if not raw:
             return None
         try:
@@ -185,7 +203,8 @@ class RedisLeaseStore(LeaseStore):
     async def get_fencing_token(self, lease_key: str) -> int:
         """Returns the current fencing token value for this lease key."""
         self._ensure_connected()
-        raw = await self._redis.get((lease_key + _FENCING_KEY_SUFFIX).encode())
+        rkey = redis_key(RedisNamespace.LEASE, lease_key + _FENCING_SUFFIX).encode()
+        raw = await self._redis.get(rkey)
         return int(raw) if raw else 0
 
     def _ensure_connected(self) -> None:
