@@ -1,0 +1,77 @@
+# AEOS Example 4 — Enterprise Approval Workflow
+#
+# Simulates an enterprise governance gate: a task is planned, reviewed
+# for policy compliance, and requires approval before execution.
+# Demonstrates the governance and reviewer agents in a compliance context.
+#
+# Usage:
+#   python run.py --request "Deploy model v2 to production"
+
+workflow:
+  name: enterprise-approval-workflow
+  description: |
+    Enterprise governance pipeline with policy check and approval gate.
+    Suitable for: change management, deployment approvals, risk review.
+
+    Flow:
+      1. Planner assesses the request and identifies risks
+      2. Reviewer checks policy compliance
+      3. Analyst produces a risk-benefit summary
+      4. Executor generates the implementation plan (post-approval)
+  version: "1.0"
+  agents:
+    - planner
+    - reviewer
+    - analyst
+    - executor
+
+  steps:
+    - name: assess
+      task: |
+        Assess the following change request for risks, dependencies, and impact:
+        Request: {request}
+
+        Output:
+        - Risk level: LOW / MEDIUM / HIGH
+        - Dependencies: list any systems affected
+        - Rollback plan: how to revert if needed
+      mode: single-agent
+      agent: planner
+      timeout_s: 45
+
+    - name: policy-check
+      task: |
+        Review this change request for policy compliance:
+        Request: {request}
+
+        Check:
+        - Does this require a change window?
+        - Are security implications considered?
+        - Is the rollback plan adequate?
+        - Output: COMPLIANT or NON_COMPLIANT with reasoning.
+      mode: single-agent
+      agent: reviewer
+      depends_on: [assess]
+      timeout_s: 30
+
+    - name: risk-summary
+      task: |
+        Produce a concise risk-benefit summary (max 200 words) for:
+        Request: {request}
+
+        Include: business impact, technical risk, recommendation.
+      mode: single-agent
+      agent: analyst
+      depends_on: [policy-check]
+      timeout_s: 30
+
+    - name: implementation-plan
+      task: |
+        Given approval, produce a step-by-step implementation plan for:
+        Request: {request}
+
+        Include: pre-conditions, execution steps, validation steps, rollback.
+      mode: single-agent
+      agent: executor
+      depends_on: [risk-summary]
+      timeout_s: 45

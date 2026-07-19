@@ -1,0 +1,72 @@
+# AEOS Example 3 — Multi-Agent Collaboration
+#
+# Full 5-agent pipeline for complex reasoning tasks.
+# Planner → Researcher → Analyst → Executor → Reviewer
+#
+# Usage:
+#   python run.py "Design a REST API for a task management system"
+
+workflow:
+  name: multi-agent-collaboration
+  description: |
+    Full 5-agent pipeline for complex tasks requiring planning, research,
+    analysis, execution, and review. Suitable for design, architecture,
+    and report generation tasks.
+  version: "1.0"
+  agents:
+    - planner
+    - researcher
+    - analyst
+    - executor
+    - reviewer
+
+  steps:
+    - name: plan
+      task: |
+        Create a detailed step-by-step plan to complete the following task.
+        Break it into 3-5 concrete subtasks:
+        Task: {task}
+      mode: single-agent
+      agent: planner
+      timeout_s: 30
+
+    - name: research
+      task: |
+        Research best practices, patterns, and relevant information for:
+        {task}
+        Focus on production-ready approaches.
+      mode: multi-agent
+      timeout_s: 60
+
+    - name: analyse
+      task: |
+        Analyse the research and identify:
+        1. The recommended approach
+        2. Key tradeoffs
+        3. Potential risks
+        For task: {task}
+      mode: single-agent
+      agent: analyst
+      depends_on: [research]
+      timeout_s: 45
+
+    - name: execute
+      task: |
+        Based on the plan and analysis, produce the primary deliverable for:
+        {task}
+        Be specific and actionable.
+      mode: single-agent
+      agent: executor
+      depends_on: [analyse]
+      timeout_s: 60
+
+    - name: review
+      task: |
+        Review the complete output for:
+        {task}
+        Check: completeness, quality, consistency, and actionability.
+        Output: APPROVED or REVISION_REQUIRED with specific feedback.
+      mode: single-agent
+      agent: reviewer
+      depends_on: [execute]
+      timeout_s: 30

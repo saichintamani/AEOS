@@ -1,0 +1,55 @@
+# AEOS Example 1 — Research Workflow
+#
+# A multi-agent pipeline that researches a topic using the planner,
+# researcher, analyst, and reviewer agents in sequence.
+#
+# Usage:
+#   aeos workflow submit --file workflow.yaml
+#   # or with variable substitution:
+#   python run.py "What are the tradeoffs between Raft and Paxos?"
+
+workflow:
+  name: research-workflow
+  description: |
+    Research a given topic through a 4-stage agent pipeline:
+    1. Planner decomposes the research question
+    2. Researcher gathers and synthesises context
+    3. Analyst identifies key findings and patterns
+    4. Reviewer validates accuracy and completeness
+  version: "1.0"
+  agents:
+    - planner
+    - researcher
+    - analyst
+    - reviewer
+
+  steps:
+    - name: decompose
+      task: "Break this research question into 3 focused sub-questions: {query}"
+      mode: single-agent
+      agent: planner
+      timeout_s: 30
+
+    - name: research
+      task: "Research and summarise the key facts, evidence, and perspectives on: {query}"
+      mode: multi-agent
+      timeout_s: 60
+
+    - name: analyse
+      task: |
+        Analyse the research findings for the question: {query}
+        Identify the 3 most important insights and any unresolved tensions.
+      mode: single-agent
+      agent: analyst
+      depends_on: [research]
+      timeout_s: 45
+
+    - name: review
+      task: |
+        Review the research and analysis for: {query}
+        Check for: factual accuracy, logical consistency, and completeness.
+        Output a brief verdict: APPROVED or NEEDS_REVISION with reason.
+      mode: single-agent
+      agent: reviewer
+      depends_on: [analyse]
+      timeout_s: 30

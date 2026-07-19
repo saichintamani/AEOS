@@ -1,0 +1,27 @@
+# AEOS Example 2 — RAG (Retrieval-Augmented Generation) Workflow
+#
+# Ingest documents then answer questions using semantic search + agent reasoning.
+#
+# Usage:
+#   python ingest.py my_document.txt    # ingest first
+#   python query.py "What is X?"        # then query
+
+workflow:
+  name: rag-query-workflow
+  description: |
+    Answer a question using the AEOS RAG knowledge base.
+    The Researcher agent uses retrieved context to formulate a grounded answer.
+  version: "1.0"
+  agents:
+    - researcher
+
+  steps:
+    - name: retrieve-and-answer
+      task: |
+        Using only information from the knowledge base, answer this question:
+        {query}
+
+        If the knowledge base does not contain relevant information, say so clearly.
+      mode: single-agent
+      agent: researcher
+      timeout_s: 45
