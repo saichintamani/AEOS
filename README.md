@@ -84,18 +84,58 @@ docker build -t aeos . && docker run --rm -p 8000:8000 aeos
   per-client rate limiting, optional `X-API-Key` auth (set the `API_KEY` env var),
   and generic error responses that never leak internals.
 
-### Security scope — honest limitations
+### Security posture (pre-production hardening pass)
 
-The hardening above covers the **RAG surface**. The following are **known,
-unaddressed** issues elsewhere in the codebase, out of scope for this slice:
+A dedicated hardening pass covered the whole API surface:
 
-- `POST /ml/train` accepts an arbitrary `dataset_path` (unauthenticated file/URL
-  read via pandas). Do not expose it publicly.
-- The ML model registry uses `pickle.load` on `.pkl` files — loading a tampered
-  model file is remote-code-execution-on-load. Treat `./data/model_registry/` as
-  trusted-only.
-- Only the RAG routes carry auth/rate-limit; other endpoints (`/run`, `/execute`,
-  `/debug/state`, `/kernel/*`) are open. Run behind your own gateway in production.
+- **Rate limiting** — tiered, fully configurable token-bucket limits on every
+  endpoint (expensive/rag/default tiers), with exponential backoff for repeat
+  offenders and `Retry-After` on 429s.
+- **Input validation** — every endpoint uses a strict Pydantic schema
+  (`extra="forbid"`, bounded lengths, format patterns); malformed input is
+  rejected, not coerced. `POST /ml/train`'s `dataset_path` is now confined to the
+  datasets directory (no arbitrary file/URL reads).
+- **Secrets** — scanned clean: no hardcoded credentials; production uses env vars
+  + a secrets manager. `.env` is gitignored.
+- **Dependencies** — audited; `python-multipart` bumped to ≥0.0.18 (fixes
+  CVE-2024-53981 DoS reachable via upload) and `pypdf` to ≥5.4.
+- **Error handling** — clients get generic messages + a `trace_id`; full detail
+  is logged server-side. No stack traces, paths, or raw exceptions leak.
+- **File uploads** — validated by size, extension allow-list, **and content**
+  (magic-byte sniffing rejects executables/archives disguised as text); stored in
+  an isolated temp dir outside the web root, never executed, deleted after ingest.
+
+**Still open:**
+
+- `X-API-Key` auth currently gates the RAG routes; other endpoints (`/run`,
+  `/execute`) are rate-limited but unauthenticated. Put them behind your own
+  gateway/authN in production.
+- `/debug/state` and `/kernel/introspect` return 403 when `DEBUG=false` (the
+  default). Set `DEBUG=true` only in development environments, never in production.
+
+---
+
+## Multi-Node Deployment — Current Limitations
+
+AEOS ships a working in-process multi-node cluster (`MultiNodeCluster`) that
+demonstrates Raft consensus, leader election, and capability federation with
+two or more nodes inside a single Python process. The 3-node docker-compose
+(`docker-compose.cluster.yml`) is a reference topology for this in-process
+mode.
+
+**Cross-process (true distributed) clustering is not yet implemented:**
+
+- `GrpcChannel` raises `NotImplementedError` on all methods. There is no
+  gRPC transport that lets containers call each other's Raft RPC handlers.
+- The three containers in the cluster docker-compose **cannot form a Raft
+  quorum across the network**. Each container runs independently.
+- Raft WAL persistence is active when `raft_data_dir` is passed to
+  `MultiNodeCluster`. For cross-process recovery, each node needs its own
+  persistent volume mounted at the same path.
+
+**Roadmap:** gRPC inter-node transport is a Phase 13 deliverable. Until then,
+multi-process clustering requires a custom `rpc_send` function that routes
+Raft RPCs over HTTP, Redis, or Kafka.
 
 ---
 
