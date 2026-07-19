@@ -1,0 +1,45 @@
+## AEOS Helm values — Staging environment overrides
+global:
+  environment: staging
+  imageRegistry: "123456789.dkr.ecr.us-east-1.amazonaws.com"
+
+api:
+  replicaCount: 2
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 6
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+worker:
+  replicaCount: 1
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 5
+
+ingress:
+  host: api-staging.aeos.example.com
+
+externalSecrets:
+  enabled: true
+  secrets:
+    - name: aeos-db-secret
+      remoteRef: "/aeos/staging/database"
+    - name: aeos-redis-secret
+      remoteRef: "/aeos/staging/redis"
+    - name: aeos-auth-secret
+      remoteRef: "/aeos/staging/auth"
+    - name: aeos-external-secrets
+      remoteRef: "/aeos/staging/external"
+
+kafka:
+  replicaCount: 1
+
+redis:
+  replica:
+    replicaCount: 0

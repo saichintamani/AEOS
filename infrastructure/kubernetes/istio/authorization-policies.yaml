@@ -1,0 +1,223 @@
+## Istio AuthorizationPolicy — L7 access control on top of mTLS identity.
+## "Who can call whom" enforced by Envoy sidecar, not by the application.
+## All policies are additive ALLOW rules in a default-deny mesh.
+
+## ─── API namespace ─────────────────────────────────────────────────────────
+
+## Deny all traffic to API namespace by default
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  {}   # Empty spec = deny all
+
+---
+## Allow ingress gateway → API (external user traffic)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: aeos-api
+  rules:
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+    to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+        ports: ["8000"]
+---
+## Allow Prometheus scraping of API metrics
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scrape-api
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: aeos-api
+  rules:
+  - from:
+    - source:
+        namespaces: ["aeos-monitoring"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/metrics"]
+        ports: ["8000"]
+---
+## Allow scheduler to receive health checks only
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-scheduler-health
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: aeos-scheduler
+  rules:
+  - from:
+    - source:
+        namespaces: ["aeos-monitoring"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/health", "/health/ready", "/metrics"]
+
+---
+## ─── Jobs namespace ────────────────────────────────────────────────────────
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  {}
+---
+## Allow Prometheus to scrape worker metrics
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-scrape-worker
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: aeos-worker
+  rules:
+  - from:
+    - source:
+        namespaces: ["aeos-monitoring"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/metrics", "/health"]
+        ports: ["9090"]
+
+---
+## ─── Data namespace ────────────────────────────────────────────────────────
+
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  {}
+---
+## Allow API pods to reach Redis
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-redis
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  rules:
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/aeos-api/sa/aeos-api-sa"
+---
+## Allow Worker pods to reach Redis
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-worker-to-redis
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  rules:
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/aeos-jobs/sa/aeos-worker-sa"
+---
+## Allow API pods to reach Qdrant (HTTP + gRPC)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-qdrant
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: qdrant
+  rules:
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/aeos-api/sa/aeos-api-sa"
+---
+## Allow API pods to reach Kafka
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-api-to-kafka
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: kafka
+  rules:
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/aeos-api/sa/aeos-api-sa"
+        - "cluster.local/ns/aeos-jobs/sa/aeos-worker-sa"
+---
+## Allow Prometheus to scrape Kafka JMX metrics
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-prometheus-kafka
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    matchLabels:
+      app: kafka
+  rules:
+  - from:
+    - source:
+        namespaces: ["aeos-monitoring"]
+    to:
+    - operation:
+        ports: ["9404"]

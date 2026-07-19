@@ -1,0 +1,12 @@
+## Kustomize overlay for Istio + Security resources
+## Apply: kubectl apply -k infrastructure/kubernetes/security/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+# External Secrets Operator
+- cluster-secret-store.yaml
+
+# OPA Gatekeeper policies
+- opa-constraints.yaml

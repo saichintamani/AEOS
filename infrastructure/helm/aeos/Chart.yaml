@@ -1,0 +1,43 @@
+apiVersion: v2
+name: aeos
+description: >
+  AEOS — AI Engineering Orchestration System.
+  Production-grade distributed multi-agent runtime with Raft consensus,
+  Kafka transport, Redis coordination, and a 15-stage execution engine.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - agents
+  - orchestration
+  - distributed-systems
+  - multi-agent
+home: https://github.com/your-org/aeos
+sources:
+  - https://github.com/your-org/aeos
+maintainers:
+  - name: AEOS Platform Team
+    email: platform@aeos.io
+
+dependencies:
+  # Redis — coordination, leases, membership, checkpoints
+  - name: redis
+    version: "19.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+    alias: redis
+
+  # Kafka — distributed task transport
+  - name: kafka
+    version: "29.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: kafka.enabled
+    alias: kafka
+
+  # Qdrant — vector store for RAG
+  - name: qdrant
+    version: "0.x.x"
+    repository: "https://qdrant.to/helm"
+    condition: qdrant.enabled
+    alias: qdrant

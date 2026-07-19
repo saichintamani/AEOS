@@ -1,0 +1,156 @@
+## Network policy additions for Kafka and Scheduler
+## Extends base network-policy.yaml for the data and API namespaces.
+
+## Allow API and Worker to reach Kafka (added to aeos-data allow rules)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-ingress
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+  - Ingress
+  ingress:
+  # From API pods (produce tasks)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-api
+    ports:
+    - port: 9092
+      protocol: TCP
+  # From Worker pods (consume tasks)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-jobs
+    ports:
+    - port: 9092
+      protocol: TCP
+  # From Prometheus (JMX metrics)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-monitoring
+    ports:
+    - port: 9404
+      protocol: TCP
+---
+## Allow Kafka inter-broker communication (KRaft controller quorum)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-egress
+  namespace: aeos-data
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+  - Egress
+  egress:
+  # Inter-broker + controller quorum
+  - to:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - port: 9092
+      protocol: TCP
+    - port: 9093
+      protocol: TCP
+  # DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+## Allow Worker egress to Kafka (add alongside existing worker egress policy)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-kafka-egress
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-worker
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 9092
+      protocol: TCP
+---
+## Allow Scheduler ingress from Prometheus (metrics scrape)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scheduler-metrics
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-scheduler
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-monitoring
+    ports:
+    - port: 9091
+      protocol: TCP
+---
+## Allow Scheduler egress to Redis and Kafka (scheduling decisions)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scheduler-egress
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-scheduler
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 6379
+      protocol: TCP
+    - port: 9092
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP

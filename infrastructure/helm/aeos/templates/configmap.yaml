@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aeos.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT:              {{ .Values.config.environment | quote }}
+  LOG_LEVEL:                {{ .Values.config.logLevel | quote }}
+  LOG_JSON:                 {{ .Values.config.logJson | quote }}
+  DEBUG:                    {{ .Values.config.debug | quote }}
+  RAG_TOP_K:                {{ .Values.config.ragTopK | quote }}
+  MEMORY_MAX_LONG_TERM:     {{ .Values.config.memoryMaxLongTerm | quote }}
+  MESSAGE_BUS_MAX_QUEUE:    {{ .Values.config.messageBusMaxQueue | quote }}
+  AGENT_TIMEOUT_SECONDS:    {{ .Values.config.agentTimeoutSeconds | quote }}
+  REDIS_URL:                "redis://{{ .Release.Name }}-redis-master:6379/0"
+  KAFKA_BOOTSTRAP_SERVERS:  "{{ .Release.Name }}-kafka:9092"
+  QDRANT_URL:               "http://{{ .Release.Name }}-qdrant:6333"

@@ -1,0 +1,191 @@
+## Qdrant StatefulSet — 3-node distributed cluster
+## Qdrant handles its own consensus/replication via built-in Raft
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: vectordb
+    app.kubernetes.io/part-of: aeos
+spec:
+  serviceName: qdrant
+  replicas: 3
+  selector:
+    matchLabels:
+      app: qdrant
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+
+  template:
+    metadata:
+      labels:
+        app: qdrant
+        app.kubernetes.io/component: vectordb
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "6333"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      terminationGracePeriodSeconds: 60
+      automountServiceAccountToken: false
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: [qdrant]
+            topologyKey: kubernetes.io/hostname
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: qdrant
+        image: qdrant/qdrant:v1.7.4
+        ports:
+        - name: http
+          containerPort: 6333
+          protocol: TCP
+        - name: grpc
+          containerPort: 6334
+          protocol: TCP
+        - name: p2p
+          containerPort: 6335
+          protocol: TCP
+
+        env:
+        - name: QDRANT__CLUSTER__ENABLED
+          value: "true"
+        - name: QDRANT__CLUSTER__P2P__PORT
+          value: "6335"
+        - name: QDRANT__SERVICE__HTTP_PORT
+          value: "6333"
+        - name: QDRANT__SERVICE__GRPC_PORT
+          value: "6334"
+        # Bootstrap URI: always peer with qdrant-0 for cluster join
+        - name: QDRANT__CLUSTER__CONSENSUS__TICK_PERIOD_MS
+          value: "100"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          ORDINAL=${POD_NAME##*-}
+          if [ "$ORDINAL" = "0" ]; then
+            # Bootstrap node — no peer URI needed
+            exec /qdrant/qdrant
+          else
+            # Join existing cluster via qdrant-0
+            exec /qdrant/qdrant \
+              --bootstrap http://qdrant-0.qdrant.${POD_NAMESPACE}.svc.cluster.local:6335
+          fi
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 2000m
+            memory: 8Gi
+
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 6333
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 6333
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false   # Qdrant needs /qdrant/storage write access
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: storage
+          mountPath: /qdrant/storage
+        - name: snapshots
+          mountPath: /qdrant/snapshots
+
+  volumeClaimTemplates:
+  - metadata:
+      name: storage
+      labels:
+        app.kubernetes.io/component: vectordb
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 100Gi
+  - metadata:
+      name: snapshots
+      labels:
+        app.kubernetes.io/component: vectordb
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 50Gi
+---
+## PodDisruptionBudget — allow at most 1 Qdrant node down during maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qdrant-pdb
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: qdrant
+---
+## PodDisruptionBudget — Redis: no more than 1 node down (primary safety)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: redis

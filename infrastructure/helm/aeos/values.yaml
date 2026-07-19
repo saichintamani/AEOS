@@ -1,0 +1,287 @@
+## ═══════════════════════════════════════════════════════════════════════════
+## AEOS Helm Chart — Default Values
+## Override with: -f values-production.yaml
+## ═══════════════════════════════════════════════════════════════════════════
+
+global:
+  imageRegistry: ""          # Override: "123456789.dkr.ecr.us-east-1.amazonaws.com"
+  imagePullSecrets: []
+  storageClass: ""
+  environment: production    # development | staging | production
+
+## ── AEOS API ────────────────────────────────────────────────────────────────
+api:
+  enabled: true
+  name: aeos-api
+  image:
+    repository: aeos-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 3
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+    annotations: {}
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 2
+
+  startupProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    failureThreshold: 30
+    periodSeconds: 2
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values: [aeos-api]
+            topologyKey: topology.kubernetes.io/zone
+
+  env: {}
+  envFromSecrets: []
+
+  terminationGracePeriodSeconds: 60
+
+## ── AEOS Worker ─────────────────────────────────────────────────────────────
+worker:
+  enabled: true
+  name: aeos-worker
+  image:
+    repository: aeos-worker
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+## ── AEOS Scheduler ──────────────────────────────────────────────────────────
+scheduler:
+  enabled: true
+  name: aeos-scheduler
+  image:
+    repository: aeos-api    # runs from same image, different command
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1            # Single leader; Raft handles HA
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+
+## ── Ingress ──────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: alb             # alb | nginx | traefik
+  host: api.aeos.example.com
+  tls:
+    enabled: true
+    secretName: aeos-tls
+    certArn: ""              # ACM cert ARN (ALB only)
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+
+## ── Config ───────────────────────────────────────────────────────────────────
+config:
+  environment: production
+  logLevel: INFO
+  logJson: "true"
+  debug: "false"
+  ragTopK: "5"
+  memoryMaxLongTerm: "2000"
+  messageBusMaxQueue: "1000"
+  agentTimeoutSeconds: "60"
+
+## ── External secrets (via External Secrets Operator) ─────────────────────────
+externalSecrets:
+  enabled: false
+  secretStoreRef:
+    name: aws-secretsmanager
+    kind: ClusterSecretStore
+  refreshInterval: "1h"
+  secrets:
+    - name: aeos-db-secret
+      remoteRef: "/aeos/production/database"
+    - name: aeos-redis-secret
+      remoteRef: "/aeos/production/redis"
+    - name: aeos-auth-secret
+      remoteRef: "/aeos/production/auth"
+    - name: aeos-external-secrets
+      remoteRef: "/aeos/production/external"
+
+## ── RBAC ─────────────────────────────────────────────────────────────────────
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}          # Add IAM role annotation for IRSA:
+                            # eks.amazonaws.com/role-arn: arn:aws:iam::...
+
+## ── Network Policy ───────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true            # Zero-trust: default-deny, explicit allows
+
+## ── Monitoring ───────────────────────────────────────────────────────────────
+monitoring:
+  serviceMonitor:
+    enabled: false         # Requires prometheus-operator CRD
+    namespace: monitoring
+    interval: 15s
+
+## ── Sub-chart: Redis (Bitnami) ───────────────────────────────────────────────
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    existingSecret: aeos-redis-secret
+    existingSecretPasswordKey: password
+  master:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    persistence:
+      enabled: true
+      size: 8Gi
+  replica:
+    replicaCount: 1
+
+## ── Sub-chart: Kafka (Bitnami) ───────────────────────────────────────────────
+kafka:
+  enabled: true
+  replicaCount: 3
+  kraft:
+    enabled: true          # KRaft mode — no ZooKeeper
+  persistence:
+    enabled: true
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+## ── Sub-chart: Qdrant ───────────────────────────────────────────────────────
+qdrant:
+  enabled: true
+  replicaCount: 1
+  persistence:
+    storageClassName: ""
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi

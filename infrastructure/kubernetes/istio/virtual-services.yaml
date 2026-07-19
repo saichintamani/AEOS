@@ -1,0 +1,110 @@
+## Istio VirtualServices — traffic routing, retries, timeouts, and canary splits.
+
+## API VirtualService — production traffic (100% stable)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: aeos-api
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  hosts:
+  - aeos-api.aeos-api.svc.cluster.local
+  http:
+  - name: api-route
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: gateway-error,connect-failure,retriable-4xx
+    route:
+    - destination:
+        host: aeos-api.aeos-api.svc.cluster.local
+        subset: stable
+      weight: 100
+---
+## API VirtualService — canary deployment (95/5 split)
+## Apply this manifest during a canary rollout, then shift traffic gradually.
+## Kept separate so normal deployments don't accidentally enable it.
+## Usage: kubectl apply -f virtual-services-canary.yaml
+# apiVersion: networking.istio.io/v1beta1
+# kind: VirtualService
+# metadata:
+#   name: aeos-api-canary
+#   namespace: aeos-api
+# spec:
+#   hosts:
+#   - aeos-api.aeos-api.svc.cluster.local
+#   http:
+#   - name: canary-split
+#     timeout: 30s
+#     retries:
+#       attempts: 2
+#       perTryTimeout: 10s
+#       retryOn: gateway-error,connect-failure
+#     route:
+#     - destination:
+#         host: aeos-api.aeos-api.svc.cluster.local
+#         subset: stable
+#       weight: 95
+#     - destination:
+#         host: aeos-api.aeos-api.svc.cluster.local
+#         subset: canary
+#       weight: 5
+---
+## Gateway — external HTTPS ingress via Istio Ingress Gateway
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: aeos-gateway
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: aeos-tls-cert   # K8s secret with TLS cert/key
+    hosts:
+    - "api.aeos.example.com"
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    tls:
+      httpsRedirect: true
+    hosts:
+    - "api.aeos.example.com"
+---
+## VirtualService attached to Gateway — routes external traffic to API service
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: aeos-api-external
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  hosts:
+  - "api.aeos.example.com"
+  gateways:
+  - aeos-gateway
+  http:
+  - name: api-external-route
+    timeout: 60s
+    retries:
+      attempts: 2
+      perTryTimeout: 30s
+      retryOn: gateway-error,connect-failure
+    route:
+    - destination:
+        host: aeos-api.aeos-api.svc.cluster.local
+        subset: stable
+      weight: 100

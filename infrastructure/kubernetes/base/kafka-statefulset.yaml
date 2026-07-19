@@ -1,0 +1,333 @@
+## Kafka StatefulSet — 3-broker KRaft cluster (no ZooKeeper, Kafka 3.7+)
+## KRaft mode: each broker is also a controller. Quorum voter list built from DNS.
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: aeos
+spec:
+  serviceName: kafka
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kafka
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0   # All pods updated simultaneously (increment for staged)
+
+  template:
+    metadata:
+      labels:
+        app: kafka
+        app.kubernetes.io/component: messaging
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9404"
+
+    spec:
+      terminationGracePeriodSeconds: 60
+      automountServiceAccountToken: false
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: [kafka]
+            topologyKey: kubernetes.io/hostname
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      initContainers:
+      # Generate node.id and quorum voters list from pod ordinal + DNS
+      - name: init-kafka
+        image: apache/kafka:3.7.0
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          ORDINAL=${HOSTNAME##*-}
+          NODE_ID=$((ORDINAL + 1))   # KRaft node IDs must start at 1
+          NAMESPACE=${POD_NAMESPACE:-aeos-data}
+          SVC=kafka
+
+          # Build quorum voters: 1@kafka-0.kafka.<ns>:9093,2@kafka-1.kafka.<ns>:9093,...
+          VOTERS=""
+          for i in 0 1 2; do
+            VOTERS="${VOTERS}$((i+1))@${SVC}-${i}.${SVC}.${NAMESPACE}.svc.cluster.local:9093,"
+          done
+          VOTERS="${VOTERS%,}"
+
+          cat > /config/server.properties << EOF
+          process.roles=broker,controller
+          node.id=${NODE_ID}
+          controller.quorum.voters=${VOTERS}
+          listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          advertised.listeners=PLAINTEXT://${HOSTNAME}.${SVC}.${NAMESPACE}.svc.cluster.local:9092
+          controller.listener.names=CONTROLLER
+          inter.broker.listener.name=PLAINTEXT
+          listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+          log.dirs=/bitnami/kafka/data
+          num.partitions=3
+          default.replication.factor=3
+          min.insync.replicas=2
+          offsets.topic.replication.factor=3
+          transaction.state.log.replication.factor=3
+          transaction.state.log.min.isr=2
+          log.retention.hours=168
+          log.segment.bytes=1073741824
+          log.retention.check.interval.ms=300000
+          auto.create.topics.enable=false
+          delete.topic.enable=true
+          # Idempotent producer support
+          enable.idempotence=true
+          # JMX for metrics exporter
+          EOF
+
+          # Format storage (idempotent — skips if already formatted)
+          CLUSTER_ID=$(cat /config/cluster-id 2>/dev/null || kafka-storage.sh random-uuid | tee /config/cluster-id)
+          kafka-storage.sh format \
+            --config /config/server.properties \
+            --cluster-id "$CLUSTER_ID" \
+            --ignore-formatted
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/kafka/data
+        - name: config
+          mountPath: /config
+        securityContext:
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
+      containers:
+      - name: kafka
+        image: apache/kafka:3.7.0
+        command:
+        - sh
+        - -c
+        - exec kafka-server-start.sh /config/server.properties
+        ports:
+        - name: broker
+          containerPort: 9092
+          protocol: TCP
+        - name: controller
+          containerPort: 9093
+          protocol: TCP
+
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx2g -Xms2g"
+        - name: KAFKA_JVM_PERFORMANCE_OPTS
+          value: "-XX:+UseG1GC -XX:MaxGCPauseMillis=20"
+        - name: JMX_PORT
+          value: "9404"
+
+        resources:
+          requests:
+            cpu: 500m
+            memory: 3Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - kafka-broker-api-versions.sh --bootstrap-server localhost:9092 &>/dev/null
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false   # Kafka needs /bitnami/kafka write access
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: data
+          mountPath: /bitnami/kafka/data
+        - name: config
+          mountPath: /config
+
+      # JMX Exporter sidecar — exposes Kafka metrics in Prometheus format
+      - name: jmx-exporter
+        image: bitnami/jmx-exporter:0.20.0
+        args: ["9404", "/jmx-config/jmx_prometheus_javaagent.yml"]
+        ports:
+        - name: metrics
+          containerPort: 9404
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: jmx-config
+          mountPath: /jmx-config
+
+      volumes:
+      - name: config
+        emptyDir: {}
+      - name: jmx-config
+        configMap:
+          name: kafka-jmx-config
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app.kubernetes.io/component: messaging
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 200Gi
+---
+## Kafka headless service — for KRaft controller quorum and broker discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: kafka
+  ports:
+  - name: broker
+    port: 9092
+    targetPort: 9092
+    protocol: TCP
+  - name: controller
+    port: 9093
+    targetPort: 9093
+    protocol: TCP
+  - name: metrics
+    port: 9404
+    targetPort: 9404
+    protocol: TCP
+---
+## Kafka client service — single endpoint for producers/consumers
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-client
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: messaging
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka
+  ports:
+  - name: broker
+    port: 9092
+    targetPort: 9092
+    protocol: TCP
+---
+## PodDisruptionBudget — Kafka: keep min-ISR (2 of 3) brokers available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-pdb
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: kafka
+---
+## JMX config for Kafka metrics export
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-jmx-config
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+data:
+  jmx_prometheus_javaagent.yml: |
+    startDelaySeconds: 0
+    ssl: false
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+    - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value
+      name: kafka_server_$1_$2
+      type: GAUGE
+      labels:
+        clientId: "$3"
+        topic: "$4"
+        partition: "$5"
+    - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>Value
+      name: kafka_server_$1_$2
+      type: GAUGE
+    - pattern: kafka.server<type=BrokerTopicMetrics, name=(.+), topic=(.+)><>OneMinuteRate
+      name: kafka_server_brokertopicmetrics_$1_rate
+      type: GAUGE
+      labels:
+        topic: "$2"
+    - pattern: kafka.coordinator.group<type=GroupMetadataManager, name=(.+)><>Value
+      name: kafka_coordinator_group_$1
+      type: GAUGE
+    - pattern: kafka.log<type=Log, name=(.+), topic=(.+), partition=(.+)><>Value
+      name: kafka_log_$1
+      type: GAUGE
+      labels:
+        topic: "$2"
+        partition: "$3"

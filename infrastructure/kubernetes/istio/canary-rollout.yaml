@@ -1,0 +1,60 @@
+## Canary Rollout Manifest — step-by-step traffic shifting for API upgrades.
+## This is a procedural document embedded as commented YAML.
+## Apply the uncommented sections in sequence during a canary deployment.
+
+## ─── Step 1: Deploy canary version ───────────────────────────────────────
+## Tag the new deployment pods with version: v2
+## kubectl set image deployment/aeos-api api=<REGISTRY>/aeos-api:<NEW_TAG> -n aeos-api
+## kubectl patch deployment aeos-api -n aeos-api -p '{"spec":{"template":{"metadata":{"labels":{"version":"v2"}}}}}'
+
+## ─── Step 2: Route 5% traffic to canary (apply this) ────────────────────
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: aeos-api-canary-5pct
+  namespace: aeos-api
+  annotations:
+    canary.aeos.io/step: "5%"
+    canary.aeos.io/stable-version: "v1"
+    canary.aeos.io/canary-version: "v2"
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  hosts:
+  - aeos-api.aeos-api.svc.cluster.local
+  - "api.aeos.example.com"
+  gateways:
+  - mesh
+  - aeos-api/aeos-gateway
+  http:
+  - name: canary-split
+    timeout: 30s
+    retries:
+      attempts: 2
+      perTryTimeout: 10s
+      retryOn: gateway-error,connect-failure
+    route:
+    - destination:
+        host: aeos-api.aeos-api.svc.cluster.local
+        subset: stable
+      weight: 95
+    - destination:
+        host: aeos-api.aeos-api.svc.cluster.local
+        subset: canary
+      weight: 5
+---
+## ─── Step 3: Promote to 20% (replace above) ─────────────────────────────
+## kubectl apply -f canary-20pct.yaml (edit weights: stable=80, canary=20)
+
+## ─── Step 4: Promote to 50% (replace above) ─────────────────────────────
+## kubectl apply -f canary-50pct.yaml (edit weights: stable=50, canary=50)
+
+## ─── Step 5: Full cutover — stable → v2, canary → 0% ────────────────────
+## kubectl apply -f virtual-services.yaml  (reverts to 100% stable, now v2)
+## kubectl label pods -l version=v1 version=v2 -n aeos-api  (relabel old pods)
+
+## ─── Rollback procedure ───────────────────────────────────────────────────
+## If error rate exceeds SLO threshold during any step:
+## 1. kubectl apply -f virtual-services.yaml   (restore 100% to v1 stable)
+## 2. kubectl rollout undo deployment/aeos-api -n aeos-api
+## 3. Page oncall, file incident report

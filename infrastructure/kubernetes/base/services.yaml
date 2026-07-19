@@ -1,0 +1,140 @@
+## API service — ClusterIP for internal routing; ALB Ingress handles external traffic
+apiVersion: v1
+kind: Service
+metadata:
+  name: aeos-api
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/name: aeos-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+spec:
+  type: ClusterIP
+  selector:
+    app: aeos-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+    protocol: TCP
+  - name: metrics
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+---
+## Worker metrics service — Prometheus scraping only; no external exposure
+apiVersion: v1
+kind: Service
+metadata:
+  name: aeos-worker
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+spec:
+  type: ClusterIP
+  selector:
+    app: aeos-worker
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+---
+## Redis service — headless for StatefulSet DNS; clients use individual pod DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  clusterIP: None   # Headless — enables redis-0.redis.aeos-data.svc.cluster.local
+  selector:
+    app: redis
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+    protocol: TCP
+---
+## Redis client service — single stable endpoint for non-sentinel clients
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-client
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: primary
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+    protocol: TCP
+---
+## Qdrant service — headless for StatefulSet discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: vectordb
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: qdrant
+  ports:
+  - name: http
+    port: 6333
+    targetPort: 6333
+    protocol: TCP
+  - name: grpc
+    port: 6334
+    targetPort: 6334
+    protocol: TCP
+---
+## Qdrant client service — single endpoint for API pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-client
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: vectordb
+    app.kubernetes.io/part-of: aeos
+spec:
+  type: ClusterIP
+  selector:
+    app: qdrant
+  ports:
+  - name: http
+    port: 6333
+    targetPort: 6333
+    protocol: TCP
+  - name: grpc
+    port: 6334
+    targetPort: 6334
+    protocol: TCP

@@ -1,0 +1,39 @@
+## Istio PeerAuthentication — enforce mTLS STRICT mode for all AEOS namespaces.
+## In STRICT mode, all service-to-service traffic must present a valid certificate.
+## No plaintext allowed within the mesh.
+
+## API namespace — strict mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: aeos-api-mtls
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  mtls:
+    mode: STRICT
+---
+## Jobs namespace — strict mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: aeos-jobs-mtls
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  mtls:
+    mode: STRICT
+---
+## Data namespace — strict mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: aeos-data-mtls
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  mtls:
+    mode: STRICT

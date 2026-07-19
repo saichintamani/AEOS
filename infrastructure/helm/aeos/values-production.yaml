@@ -1,0 +1,81 @@
+## AEOS Helm values — Production environment overrides
+## These values enforce HA, security hardening, and full observability.
+global:
+  environment: production
+  imageRegistry: "123456789.dkr.ecr.us-east-1.amazonaws.com"
+  imagePullSecrets:
+    - name: ecr-pull-secret
+
+api:
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+worker:
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 50
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+ingress:
+  host: api.aeos.example.com
+  tls:
+    enabled: true
+    certArn: "arn:aws:acm:us-east-1:123456789:certificate/REPLACE_ME"
+  annotations:
+    alb.ingress.kubernetes.io/wafv2-acl-arn: "arn:aws:wafv2:us-east-1:123456789:regional/webacl/aeos/REPLACE_ME"
+    alb.ingress.kubernetes.io/load-balancer-attributes: >
+      routing.http2.enabled=true,
+      idle_timeout.timeout_seconds=60,
+      access_logs.s3.enabled=true,
+      access_logs.s3.bucket=aeos-alb-logs-production
+
+externalSecrets:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+
+rbac:
+  create: true
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789:role/aeos-production-irsa"
+
+kafka:
+  replicaCount: 3
+  persistence:
+    size: 50Gi
+
+redis:
+  replica:
+    replicaCount: 2
+  master:
+    persistence:
+      size: 20Gi
+
+qdrant:
+  replicaCount: 2
+  persistence:
+    size: 50Gi

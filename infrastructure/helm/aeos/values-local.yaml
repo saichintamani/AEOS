@@ -1,0 +1,56 @@
+## AEOS Helm values — Local development overrides
+## Usage: helm install aeos ./infrastructure/helm/aeos -f values-local.yaml
+global:
+  environment: development
+
+api:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+worker:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+scheduler:
+  replicaCount: 1
+
+ingress:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+externalSecrets:
+  enabled: false
+
+kafka:
+  replicaCount: 1
+  persistence:
+    size: 5Gi
+
+redis:
+  auth:
+    enabled: false
+  replica:
+    replicaCount: 0
+  master:
+    persistence:
+      size: 1Gi
+
+qdrant:
+  replicaCount: 1
+  persistence:
+    size: 1Gi

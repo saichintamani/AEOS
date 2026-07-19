@@ -1,0 +1,156 @@
+## Error Budget Dashboard — Grafana JSON
+## Tracks SLO burn rates, remaining budget, and violation windows.
+## Import via: Grafana → Dashboards → Import → Paste JSON
+
+{
+  "title": "AEOS Error Budget",
+  "uid": "aeos-error-budget",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-30d", "to": "now" },
+  "tags": ["aeos", "slo", "error-budget"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability SLO — 30-Day Error Budget Remaining",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0,  "color": "red" },
+              { "value": 10, "color": "orange" },
+              { "value": 25, "color": "yellow" },
+              { "value": 50, "color": "green" }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "expr": "clamp_min((1 - (sum(increase(aeos_http_requests_total{status_class=\"5xx\"}[30d])) / sum(increase(aeos_http_requests_total[30d]))) - 0.001) / 0.001 * 100, 0)",
+        "legendFormat": "Budget Remaining %"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Task Success SLO — 30-Day Error Budget Remaining",
+      "type": "gauge",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0,  "color": "red" },
+              { "value": 10, "color": "orange" },
+              { "value": 25, "color": "yellow" },
+              { "value": 50, "color": "green" }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "expr": "clamp_min((1 - (sum(increase(aeos_task_executions_total{status=\"failed\"}[30d])) / sum(increase(aeos_task_executions_total[30d]))) - 0.995) / 0.005 * 100, 0)",
+        "legendFormat": "Budget Remaining %"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Current Burn Rate (vs 1x)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0,    "color": "green" },
+              { "value": 6,    "color": "yellow" },
+              { "value": 14.4, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "expr": "(sum(rate(aeos_http_requests_total{status_class=\"5xx\"}[1h])) / sum(rate(aeos_http_requests_total[1h]))) / 0.001",
+        "legendFormat": "Burn Rate (1h)"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "Availability — 30-Day Rolling",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": 0,     "color": "red" },
+              { "value": 0.999, "color": "green" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(aeos_http_requests_total{status_class!=\"5xx\"}[5m])) / sum(rate(aeos_http_requests_total[5m]))",
+          "legendFormat": "Availability (5m)"
+        },
+        {
+          "expr": "vector(0.999)",
+          "legendFormat": "SLO Target (99.9%)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Error Rate by Hour (last 7 days)",
+      "type": "heatmap",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+      "targets": [{
+        "expr": "sum by (le) (increase(aeos_http_requests_total{status_class=\"5xx\"}[1h]))",
+        "legendFormat": "{{le}}"
+      }]
+    },
+    {
+      "id": 6,
+      "title": "SLO Burn Rate Alerts — Last 7 Days",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "(sum(rate(aeos_http_requests_total{status_class=\"5xx\"}[1h])) / sum(rate(aeos_http_requests_total[1h]))) / 0.001",
+          "legendFormat": "1h Burn Rate"
+        },
+        {
+          "expr": "(sum(rate(aeos_http_requests_total{status_class=\"5xx\"}[6h])) / sum(rate(aeos_http_requests_total[6h]))) / 0.001",
+          "legendFormat": "6h Burn Rate"
+        },
+        {
+          "expr": "vector(14.4)",
+          "legendFormat": "Critical Threshold (14.4x)"
+        },
+        {
+          "expr": "vector(6)",
+          "legendFormat": "Warning Threshold (6x)"
+        },
+        {
+          "expr": "vector(1)",
+          "legendFormat": "Sustainable (1x)"
+        }
+      ]
+    }
+  ]
+}

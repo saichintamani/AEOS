@@ -1,3 +1,5 @@
+## Namespace creation with Pod Security Standards labels
+## Applied before any workloads — PSA enforces restricted profile at admission.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,6 +8,12 @@ metadata:
     app.kubernetes.io/part-of: aeos
     environment: production
     team: platform
+    kubernetes.io/metadata.name: aeos-api
+    # Pod Security Admission — restricted profile for AEOS API namespace
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.29
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -15,6 +23,11 @@ metadata:
     app.kubernetes.io/part-of: aeos
     environment: production
     team: platform
+    kubernetes.io/metadata.name: aeos-jobs
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.29
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -24,6 +37,12 @@ metadata:
     app.kubernetes.io/part-of: aeos
     environment: production
     team: platform
+    kubernetes.io/metadata.name: aeos-data
+    # Data namespace uses baseline (Redis/Qdrant need non-readonly rootfs)
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.29
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -33,3 +52,6 @@ metadata:
     app.kubernetes.io/part-of: aeos
     environment: production
     team: platform
+    kubernetes.io/metadata.name: aeos-monitoring
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.29

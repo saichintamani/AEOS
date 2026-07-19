@@ -1,0 +1,319 @@
+## Zero Trust Network Policies — default-deny everything, then explicitly allow.
+## All policies follow the principle: if it's not listed, it's blocked.
+
+## ─── aeos-api namespace ────────────────────────────────────────────────────
+
+## Default deny all ingress and egress in aeos-api
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: aeos-api
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+## Allow ingress to API on port 8000 from ALB and within namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-ingress
+  namespace: aeos-api
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-api
+  policyTypes:
+  - Ingress
+  ingress:
+  # From ALB ingress controller (kube-system namespace)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 8000
+      protocol: TCP
+  # From within same namespace (health checks, internal calls)
+  - from:
+    - podSelector: {}
+    ports:
+    - port: 8000
+      protocol: TCP
+---
+## Allow API egress to data layer and external services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-egress
+  namespace: aeos-api
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-api
+  policyTypes:
+  - Egress
+  egress:
+  # Redis (aeos-data namespace)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 6379
+      protocol: TCP
+  # Qdrant (aeos-data namespace)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 6333
+      protocol: TCP
+    - port: 6334
+      protocol: TCP
+  # Kafka (aeos-data namespace)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 9092
+      protocol: TCP
+  # DNS (kube-dns)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # External HTTPS (GitHub, OpenAI, OTLP collector)
+  - ports:
+    - port: 443
+      protocol: TCP
+    - port: 4317
+      protocol: TCP
+---
+## Allow Prometheus to scrape API metrics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape-api
+  namespace: aeos-api
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-api
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-monitoring
+    ports:
+    - port: 8000
+      protocol: TCP
+
+---
+## ─── aeos-jobs namespace ───────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: aeos-jobs
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+## Allow Prometheus to scrape worker metrics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape-worker
+  namespace: aeos-jobs
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-worker
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-monitoring
+    ports:
+    - port: 9090
+      protocol: TCP
+---
+## Allow worker egress to Redis, Kafka, DNS, external HTTPS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-egress
+  namespace: aeos-jobs
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-worker
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-data
+    ports:
+    - port: 6379
+      protocol: TCP
+    - port: 9092
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - ports:
+    - port: 443
+      protocol: TCP
+
+---
+## ─── aeos-data namespace ───────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: aeos-data
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+## Allow Redis ingress from api and worker namespaces only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-ingress
+  namespace: aeos-data
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-api
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-jobs
+    ports:
+    - port: 6379
+      protocol: TCP
+---
+## Allow Redis egress for replication between pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-egress
+  namespace: aeos-data
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - port: 6379
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+---
+## Allow Qdrant ingress from api namespace only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-qdrant-ingress
+  namespace: aeos-data
+spec:
+  podSelector:
+    matchLabels:
+      app: qdrant
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-api
+    ports:
+    - port: 6333
+      protocol: TCP
+    - port: 6334
+      protocol: TCP
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: aeos-monitoring
+    ports:
+    - port: 6333
+      protocol: TCP
+---
+## Allow Qdrant egress for cluster consensus between pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-qdrant-egress
+  namespace: aeos-data
+spec:
+  podSelector:
+    matchLabels:
+      app: qdrant
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: qdrant
+    ports:
+    - port: 6335
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP

@@ -1,0 +1,125 @@
+{{- if .Values.networkPolicy.enabled -}}
+## Default-deny all ingress and egress in the AEOS namespace.
+## Explicit allow rules below follow Zero Trust principles.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aeos.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+## Allow ingress to API from ALB/ingress-controller and within namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aeos.fullname" . }}-api-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8000
+          protocol: TCP
+---
+## Allow API egress to Redis, Kafka, Qdrant, and DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aeos.fullname" . }}-api-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Egress
+  egress:
+    # Redis
+    - ports:
+        - port: 6379
+          protocol: TCP
+    # Kafka
+    - ports:
+        - port: 9092
+          protocol: TCP
+    # Qdrant
+    - ports:
+        - port: 6333
+          protocol: TCP
+        - port: 6334
+          protocol: TCP
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # External HTTPS (GitHub API, OpenAI, OTLP)
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 4317
+          protocol: TCP
+---
+## Allow worker egress to Redis, Kafka, and DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aeos.fullname" . }}-worker-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 6379
+          protocol: TCP
+        - port: 9092
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+## Allow Prometheus to scrape all AEOS pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aeos.fullname" . }}-prometheus-scrape
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+{{- end }}

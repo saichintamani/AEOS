@@ -37,3 +37,10 @@ Thumbs.db
 .idea/
 
 data/rag/
+
+# ── Proto generated stubs (rebuilt by buf generate in CI) ─────────────────────
+app/distributed/grpc/generated/*_pb2.py
+app/distributed/grpc/generated/*_pb2_grpc.py
+app/distributed/grpc/generated/*_pb2.pyi
+# Keep the __init__.py placeholder
+!app/distributed/grpc/generated/__init__.py

@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aeos-worker
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: aeos
+    version: v1
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+
+  selector:
+    matchLabels:
+      app: aeos-worker
+
+  template:
+    metadata:
+      labels:
+        app: aeos-worker
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      serviceAccountName: aeos-worker-sa
+      terminationGracePeriodSeconds: 120   # Finish in-flight tasks before shutdown
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: [aeos-worker]
+              topologyKey: topology.kubernetes.io/zone
+
+      nodeSelector:
+        workload-type: general
+
+      containers:
+      - name: worker
+        image: REGISTRY_PLACEHOLDER/aeos-worker:VERSION_PLACEHOLDER
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        envFrom:
+        - configMapRef:
+            name: aeos-config
+
+        env:
+        - name: WORKER_MODE
+          value: "true"
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aeos-external-secrets
+              key: openai_api_key
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: aeos-external-secrets
+              key: github_token
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: metrics
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+
+        startupProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          failureThreshold: 30
+          periodSeconds: 3
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: workspace
+          mountPath: /workspace
+
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: workspace
+        emptyDir:
+          sizeLimit: 10Gi
+
+      imagePullSecrets:
+      - name: ecr-pull-secret

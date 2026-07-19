@@ -1,0 +1,73 @@
+{{- if .Values.rbac.create -}}
+## Role: API can read configmaps and secrets in its own namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "aeos.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - aeos-db-secret
+      - aeos-redis-secret
+      - aeos-auth-secret
+      - aeos-external-secrets
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "aeos.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "aeos.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "aeos.fullname" . }}-api
+  apiGroup: rbac.authorization.k8s.io
+---
+## Worker role: read-only access to its own config
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "aeos.fullname" . }}-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - aeos-db-secret
+      - aeos-redis-secret
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "aeos.fullname" . }}-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "aeos.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "aeos.fullname" . }}-worker
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

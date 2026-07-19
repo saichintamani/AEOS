@@ -1,0 +1,223 @@
+## Redis StatefulSet — 3-node replica set (1 primary, 2 replicas)
+## Uses Redis Sentinel for automatic failover within Kubernetes
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: aeos-data
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: aeos
+spec:
+  serviceName: redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+
+  template:
+    metadata:
+      labels:
+        app: redis
+        app.kubernetes.io/component: cache
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+
+    spec:
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: default
+      automountServiceAccountToken: false
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: [redis]
+            topologyKey: kubernetes.io/hostname
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+
+      initContainers:
+      # Determine role (primary or replica) based on pod ordinal
+      - name: init-redis
+        image: redis:7.2-alpine
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          # Pod ordinal extracted from hostname (redis-0, redis-1, redis-2)
+          ORDINAL=${HOSTNAME##*-}
+          # redis-0 is always primary on first boot
+          if [ "$ORDINAL" = "0" ]; then
+            echo "role primary" > /data/role
+          else
+            echo "role replica" > /data/role
+            echo "replicaof redis-0.redis.aeos-data.svc.cluster.local 6379" >> /data/role
+          fi
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          runAsUser: 999
+          allowPrivilegeEscalation: false
+
+      containers:
+      - name: redis
+        image: redis:7.2-alpine
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          ROLE=$(cat /data/role | head -1 | cut -d' ' -f2)
+          if [ "$ROLE" = "primary" ]; then
+            exec redis-server \
+              --bind 0.0.0.0 \
+              --port 6379 \
+              --maxmemory 2gb \
+              --maxmemory-policy allkeys-lru \
+              --save 900 1 \
+              --save 300 10 \
+              --appendonly yes \
+              --appendfsync everysec \
+              --requirepass $(REDIS_PASSWORD) \
+              --loglevel notice
+          else
+            REPLICA_LINE=$(grep replicaof /data/role)
+            exec redis-server \
+              --bind 0.0.0.0 \
+              --port 6379 \
+              $REPLICA_LINE \
+              --masterauth $(REDIS_PASSWORD) \
+              --requirepass $(REDIS_PASSWORD) \
+              --replica-read-only yes \
+              --maxmemory 2gb \
+              --maxmemory-policy allkeys-lru \
+              --appendonly yes \
+              --appendfsync everysec \
+              --loglevel notice
+          fi
+        ports:
+        - name: redis
+          containerPort: 6379
+
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aeos-redis-secret
+              key: password
+
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 3Gi
+
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - redis-cli -a $REDIS_PASSWORD ping | grep PONG
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - redis-cli -a $REDIS_PASSWORD ping | grep PONG
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false   # Redis needs /data write access
+          capabilities:
+            drop: ["ALL"]
+
+        volumeMounts:
+        - name: data
+          mountPath: /data
+
+      # Redis Exporter sidecar for Prometheus metrics
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0
+        ports:
+        - name: exporter
+          containerPort: 9121
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aeos-redis-secret
+              key: password
+        - name: REDIS_ADDR
+          value: "redis://localhost:6379"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 59000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app.kubernetes.io/component: cache
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-encrypted
+      resources:
+        requests:
+          storage: 20Gi
+---
+## StorageClass — gp3 encrypted EBS volumes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-encrypted
+  labels:
+    app.kubernetes.io/part-of: aeos
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+  throughput: "125"
+  iops: "3000"
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer

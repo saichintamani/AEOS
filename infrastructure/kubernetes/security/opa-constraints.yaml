@@ -1,0 +1,169 @@
+## OPA Gatekeeper Constraint Templates and Constraints for AEOS
+## Enforces security posture across all namespaces.
+
+## ─── ConstraintTemplate: Require non-root containers ─────────────────────
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: requirenonroot
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  crd:
+    spec:
+      names:
+        kind: RequireNonRoot
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package requirenonroot
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        not container.securityContext.runAsNonRoot
+        msg := sprintf("Container '%v' must set runAsNonRoot: true", [container.name])
+      }
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.initContainers[_]
+        not container.securityContext.runAsNonRoot
+        msg := sprintf("initContainer '%v' must set runAsNonRoot: true", [container.name])
+      }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RequireNonRoot
+metadata:
+  name: require-non-root-aeos
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  match:
+    kinds:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+    namespaces: ["aeos-api", "aeos-jobs", "aeos-data"]
+---
+## ─── ConstraintTemplate: Block privilege escalation ──────────────────────
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: noprivilegeescalation
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  crd:
+    spec:
+      names:
+        kind: NoPrivilegeEscalation
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package noprivilegeescalation
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        container.securityContext.allowPrivilegeEscalation == true
+        msg := sprintf("Container '%v' must not allow privilege escalation", [container.name])
+      }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: NoPrivilegeEscalation
+metadata:
+  name: no-privilege-escalation-aeos
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  match:
+    kinds:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+    namespaces: ["aeos-api", "aeos-jobs", "aeos-data"]
+---
+## ─── ConstraintTemplate: Require resource limits ─────────────────────────
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: requireresourcelimits
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  crd:
+    spec:
+      names:
+        kind: RequireResourceLimits
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package requireresourcelimits
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        not container.resources.limits.cpu
+        msg := sprintf("Container '%v' must specify a CPU limit", [container.name])
+      }
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        not container.resources.limits.memory
+        msg := sprintf("Container '%v' must specify a memory limit", [container.name])
+      }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RequireResourceLimits
+metadata:
+  name: require-resource-limits-aeos
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  match:
+    kinds:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet"]
+    namespaces: ["aeos-api", "aeos-jobs", "aeos-data"]
+---
+## ─── ConstraintTemplate: Require read-only root filesystem ───────────────
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: requirereadonlyrootfs
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  crd:
+    spec:
+      names:
+        kind: RequireReadOnlyRootFs
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package requirereadonlyrootfs
+      # Exempt stateful workloads that legitimately need writes
+      exempt := {"redis", "qdrant"}
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        not exempt[input.review.object.metadata.labels["app"]]
+        container.securityContext.readOnlyRootFilesystem != true
+        msg := sprintf("Container '%v' must set readOnlyRootFilesystem: true", [container.name])
+      }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RequireReadOnlyRootFs
+metadata:
+  name: require-readonly-rootfs-aeos
+  labels:
+    app.kubernetes.io/part-of: aeos
+spec:
+  match:
+    kinds:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet"]
+    namespaces: ["aeos-api", "aeos-jobs"]
+---
+## ─── Pod Security Standards — restricted profile ─────────────────────────
+## Applied at namespace level via labels (PSA built into K8s 1.25+)
+## These labels are set on namespace creation; documented here for reference.
+##
+## kubectl label namespace aeos-api \
+##   pod-security.kubernetes.io/enforce=restricted \
+##   pod-security.kubernetes.io/enforce-version=v1.29 \
+##   pod-security.kubernetes.io/warn=restricted \
+##   pod-security.kubernetes.io/audit=restricted
+##
+## kubectl label namespace aeos-jobs \
+##   pod-security.kubernetes.io/enforce=restricted \
+##   pod-security.kubernetes.io/enforce-version=v1.29

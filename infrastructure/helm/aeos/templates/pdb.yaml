@@ -1,0 +1,31 @@
+{{- if and .Values.api.enabled .Values.api.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aeos.fullname" . }}-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "aeos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+{{- end }}
+---
+{{- if and .Values.worker.enabled .Values.worker.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aeos.fullname" . }}-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aeos.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.worker.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "aeos.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end }}

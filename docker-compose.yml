@@ -12,7 +12,7 @@ version: '3.9'
 x-common-env: &common-env
   PYTHONUNBUFFERED: "1"
   ENVIRONMENT: development
-  DATABASE_URL: postgresql://aeos:devpassword@postgres:5432/aeos
+  DATABASE_URL: postgresql://aeos:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/aeos
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/1
   CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -124,7 +124,8 @@ services:
     environment:
       POSTGRES_DB: aeos
       POSTGRES_USER: aeos
-      POSTGRES_PASSWORD: devpassword
+      # Dev default; override in real deployments via env / secrets store.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres-data:/var/lib/postgresql/data

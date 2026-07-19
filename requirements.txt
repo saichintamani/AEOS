@@ -20,7 +20,7 @@ sentence-transformers==3.3.1
 chromadb==0.5.23
 tiktoken==0.8.0
 beautifulsoup4==4.12.3          # HTMLLoader text extraction
-python-multipart==0.0.12        # multipart parsing for /rag/upload
+python-multipart==0.0.18        # multipart parsing for /rag/upload (>=0.0.18 fixes CVE-2024-53981 DoS)
 # openai>=1.0                    # OPTIONAL — enables OpenAIGenerator / OpenAIEmbeddings
 #                                 when OPENAI_API_KEY is set. Offline extractive
 #                                 generation is the default and needs nothing.
@@ -32,7 +32,7 @@ PyGithub==2.5.0
 scikit-learn==1.6.0
 numpy==2.2.0
 pandas==2.2.3
-pypdf==5.1.0
+pypdf==5.4.0
 
 # ── Observability (Phase 9B.6) ────────────────────────────────────────────────
 opentelemetry-api==1.29.0

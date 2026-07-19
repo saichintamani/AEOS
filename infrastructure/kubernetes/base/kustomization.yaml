@@ -1,0 +1,50 @@
+## kustomization.yaml — Kustomize overlay base for AEOS K8s manifests.
+## Apply all base manifests: kubectl apply -k infrastructure/kubernetes/base/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aeos-api
+
+resources:
+# Namespace declarations (sets up aeos-api, aeos-jobs, aeos-data, aeos-monitoring)
+- namespace.yaml
+
+# RBAC
+- rbac.yaml
+
+# Application deployments
+- api-deployment.yaml
+- worker-deployment.yaml
+- scheduler-deployment.yaml
+
+# Data layer StatefulSets
+- redis-statefulset.yaml
+- kafka-statefulset.yaml
+- qdrant-statefulset.yaml
+
+# Services (internal routing)
+- services.yaml
+
+# Ingress (external traffic entry)
+- ingress.yaml
+
+# Config
+- configmap.yaml
+
+# Autoscaling
+- hpa.yaml
+
+# Availability
+- pdb.yaml
+
+# Zero-trust networking
+- network-policy.yaml
+- network-policy-kafka.yaml
+
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/part-of: aeos
+
+commonAnnotations:
+  app.kubernetes.io/version: "0.1.0"

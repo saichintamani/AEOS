@@ -1,0 +1,133 @@
+## Service Accounts
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aeos-api-sa
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/name: aeos-api
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    # IRSA — binds this SA to an AWS IAM role via OIDC (set at deploy time)
+    eks.amazonaws.com/role-arn: ""
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aeos-worker-sa
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-worker
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+automountServiceAccountToken: false
+---
+## API Role — least-privilege: read configmaps/secrets in own namespace only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aeos-api-role
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aeos-api-rb
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+subjects:
+- kind: ServiceAccount
+  name: aeos-api-sa
+  namespace: aeos-api
+roleRef:
+  kind: Role
+  name: aeos-api-role
+  apiGroup: rbac.authorization.k8s.io
+---
+## Worker Role — can read/write own namespace; can read tasks from aeos-api
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aeos-worker-role
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aeos-worker-rb
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/part-of: aeos
+subjects:
+- kind: ServiceAccount
+  name: aeos-worker-sa
+  namespace: aeos-jobs
+roleRef:
+  kind: Role
+  name: aeos-worker-role
+  apiGroup: rbac.authorization.k8s.io
+---
+## Cross-namespace: Worker can read ConfigMaps from aeos-api namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aeos-worker-cross-ns-role
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aeos-worker-cross-ns-rb
+  namespace: aeos-api
+  labels:
+    app.kubernetes.io/part-of: aeos
+subjects:
+- kind: ServiceAccount
+  name: aeos-worker-sa
+  namespace: aeos-jobs
+roleRef:
+  kind: Role
+  name: aeos-worker-cross-ns-role
+  apiGroup: rbac.authorization.k8s.io

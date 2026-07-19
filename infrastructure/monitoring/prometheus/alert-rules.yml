@@ -1,0 +1,201 @@
+## Prometheus alert rules for AEOS production.
+## Covers: API availability, task processing, invariants, infrastructure.
+
+groups:
+- name: aeos.api
+  interval: 30s
+  rules:
+
+  - alert: AEOSAPIDown
+    expr: up{job="aeos-api"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      component: api
+      layer: application
+    annotations:
+      summary: "AEOS API is down"
+      description: "The AEOS API ({{ $labels.instance }}) has been unreachable for 1 minute."
+      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+
+  - alert: AEOSAPIHighErrorRate
+    expr: |
+      sum(rate(aeos_http_requests_total{status_class="5xx"}[5m])) /
+      sum(rate(aeos_http_requests_total[5m])) > 0.01
+    for: 3m
+    labels:
+      severity: critical
+      component: api
+      layer: application
+    annotations:
+      summary: "AEOS API error rate > 1%"
+      description: "API 5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+
+  - alert: AEOSAPIHighLatencyP99
+    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 5
+    for: 5m
+    labels:
+      severity: warning
+      component: api
+      layer: application
+    annotations:
+      summary: "AEOS API P99 latency > 5s"
+      description: "P99 API response time is {{ $value | humanizeDuration }}."
+
+  - alert: AEOSAPIHighLatencyP99Critical
+    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 15
+    for: 2m
+    labels:
+      severity: critical
+      component: api
+      layer: application
+    annotations:
+      summary: "AEOS API P99 latency > 15s (SLO breach)"
+      description: "P99 API response time is {{ $value | humanizeDuration }}. Error budget burning."
+
+- name: aeos.workers
+  interval: 30s
+  rules:
+
+  - alert: AEOSWorkerDown
+    expr: kube_deployment_status_replicas_available{deployment="aeos-worker", namespace="aeos-jobs"} == 0
+    for: 2m
+    labels:
+      severity: critical
+      component: worker
+      layer: application
+    annotations:
+      summary: "All AEOS workers are down"
+      description: "Zero available worker pods for 2 minutes. Tasks queuing up."
+      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-worker-failure.md"
+
+  - alert: AEOSHighTaskFailureRate
+    expr: |
+      sum(rate(aeos_task_executions_total{status="failed"}[5m])) /
+      sum(rate(aeos_task_executions_total[5m])) > 0.05
+    for: 3m
+    labels:
+      severity: critical
+      component: worker
+      layer: application
+    annotations:
+      summary: "AEOS task failure rate > 5%"
+      description: "Task failure rate is {{ $value | humanizePercentage }}."
+
+  - alert: AEOSWorkerQueueDepthHigh
+    expr: aeos_worker_queue_depth > 1000
+    for: 5m
+    labels:
+      severity: warning
+      component: worker
+      layer: application
+    annotations:
+      summary: "AEOS worker queue depth > 1000"
+      description: "Task queue has {{ $value }} pending items. Consider scaling workers."
+
+  - alert: AEOSWorkerQueueDepthCritical
+    expr: aeos_worker_queue_depth > 10000
+    for: 2m
+    labels:
+      severity: critical
+      component: worker
+      layer: application
+    annotations:
+      summary: "AEOS worker queue depth > 10000"
+      description: "Task queue at {{ $value }}. System severely backlogged."
+
+- name: aeos.invariants
+  interval: 15s
+  rules:
+
+  - alert: AEOSInvariantViolation
+    expr: increase(aeos_invariant_violations_total[1m]) > 0
+    labels:
+      severity: critical
+      component: invariant-engine
+      layer: application
+    annotations:
+      summary: "AEOS invariant violation detected"
+      description: "{{ $value }} invariant violation(s) in the last minute. System correctness at risk."
+      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+
+- name: aeos.infrastructure
+  interval: 60s
+  rules:
+
+  - alert: AEOSRedisDown
+    expr: redis_up == 0
+    for: 1m
+    labels:
+      severity: critical
+      component: redis
+      layer: infrastructure
+    annotations:
+      summary: "Redis is down"
+      description: "Redis instance {{ $labels.instance }} has been unreachable for 1 minute."
+      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-redis-failure.md"
+
+  - alert: AEOSRedisMemoryHigh
+    expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+    for: 5m
+    labels:
+      severity: warning
+      component: redis
+      layer: infrastructure
+    annotations:
+      summary: "Redis memory usage > 85%"
+      description: "Redis memory at {{ $value | humanizePercentage }}. Risk of eviction."
+
+  - alert: AEOSPodCrashLooping
+    expr: increase(kube_pod_container_status_restarts_total{namespace=~"aeos-.*"}[15m]) > 3
+    labels:
+      severity: warning
+      component: "{{ $labels.container }}"
+      layer: application
+    annotations:
+      summary: "Pod crash-looping in {{ $labels.namespace }}"
+      description: "Pod {{ $labels.pod }} ({{ $labels.container }}) restarted {{ $value }} times in 15 minutes."
+
+  - alert: AEOSNodeDiskPressure
+    expr: kube_node_status_condition{condition="DiskPressure", status="true"} == 1
+    for: 5m
+    labels:
+      severity: warning
+      component: node
+      layer: infrastructure
+    annotations:
+      summary: "Node {{ $labels.node }} disk pressure"
+      description: "Node {{ $labels.node }} has disk pressure. Pods may be evicted."
+
+- name: aeos.slo
+  interval: 60s
+  rules:
+
+  # Availability SLO: 99.9% = max 43.2 min/month downtime
+  - alert: AEOSSLOAvailabilityBurning
+    expr: |
+      (1 - (
+        sum(rate(aeos_http_requests_total{status_class!="5xx"}[1h])) /
+        sum(rate(aeos_http_requests_total[1h]))
+      )) > (1 - 0.999) * 14.4
+    for: 1m
+    labels:
+      severity: critical
+      component: slo
+      layer: application
+    annotations:
+      summary: "AEOS availability SLO error budget burning fast (14.4x rate)"
+      description: "At current error rate, the monthly error budget will be exhausted in < 2 hours."
+
+  - alert: AEOSSLOLatencyBurning
+    expr: |
+      histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 2
+    for: 15m
+    labels:
+      severity: warning
+      component: slo
+      layer: application
+    annotations:
+      summary: "AEOS latency SLO at risk (P99 > 2s for 15m)"
+      description: "P99 latency SLO target is 1s. Currently {{ $value | humanizeDuration }}."
