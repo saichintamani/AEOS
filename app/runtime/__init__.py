@@ -44,7 +44,15 @@ from app.runtime.workflow_compiler import (
     WorkflowDefinition,
 )
 
+from app.runtime.execution_memory import ExecutionMemoryStore, ExecutionRecord, ResourceUsage, LatencyBreakdown
+from app.runtime.pattern_miner import PatternMiner, MiningResult, WorkerPerformanceProfile
+from app.runtime.adaptive_scheduler import AdaptiveScheduler, SchedulingHints, SchedulingDecision
+
 __all__ = [
+    # P12A.4 — Self-Improving Runtime
+    "ExecutionMemoryStore", "ExecutionRecord", "ResourceUsage", "LatencyBreakdown",
+    "PatternMiner", "MiningResult", "WorkerPerformanceProfile",
+    "AdaptiveScheduler", "SchedulingHints", "SchedulingDecision",
     # Coordinator (9B.4.1)
     "RuntimeCoordinator",
     # Workflow Compiler (9B.4.2)
