@@ -145,7 +145,9 @@ class TestES256:
         assert claims.worker_id == "worker-5"
 
     def test_expired_token_raises(self, es256_signer, es256_verifier):
-        token = es256_signer.sign(subject="task-exp", ttl_seconds=-1)
+        # Expire well beyond the verifier's 5s clock-skew tolerance so the
+        # rejection is unambiguous (skew allowance is intentional, RFC 7519).
+        token = es256_signer.sign(subject="task-exp", ttl_seconds=-3600)
         with pytest.raises(TokenExpired):
             es256_verifier.verify(token)
 

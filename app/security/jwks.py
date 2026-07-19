@@ -63,7 +63,6 @@ class JWK:
             EllipticCurvePublicKey, SECP256R1
         )
         pub = self._key.public_key
-        numbers = pub.public_key().key_size  # Verify it's a public key
         pub_numbers = pub.public_numbers()
 
         # Encode X and Y coordinates as URL-safe base64 (no padding)
