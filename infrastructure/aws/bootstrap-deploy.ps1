@@ -7,13 +7,22 @@
 
     1. S3 state bucket        aeos-tfstate-<account>   (versioned, encrypted, private)
     2. DynamoDB lock table    aeos-tflock              (PAY_PER_REQUEST)
-    3. IAM policy             aeos-deploy              (from aeos-deploy-permissions.json)
-    4. IAM role               aeos-deploy              (from aeos-deploy-trust.json)
-    5. IAM user               aeos-deployer            (the human assumer; MFA enabled separately)
-    6. (optional) GitHub OIDC provider                 (-EnableOidc)
+    3. IAM policies           aeos-deploy + aeos-deploy-services
+                              (split: a single doc exceeds IAM's 6144-char PolicySize
+                               limit, and the 14.2 apply loop only grows it)
+    4. IAM user               aeos-deployer            (the human assumer; MFA enabled separately)
+    5. (optional) GitHub OIDC provider                 (-EnableOidc)
+    6. IAM role               aeos-deploy              (from aeos-deploy-trust.json; both policies attached)
+
+  ORDER MATTERS: the trust policy (aeos-deploy-trust.json) names BOTH the aeos-deployer
+  user AND the GitHub OIDC provider as principals, and IAM validates that referenced
+  principals already exist. So the user and the OIDC provider are created BEFORE the role.
+  Because the bundled trust references the OIDC provider unconditionally, -EnableOidc is
+  effectively required for a first create; the role step verifies the provider exists and
+  fails loudly with guidance if it does not.
 
   It is IDEMPOTENT: re-running updates in place (new policy version, refreshed trust,
-  re-attached policy) and never errors on "already exists". These resources are
+  re-attached policies) and never errors on "already exists". These resources are
   effectively free - unlike the `terraform apply` they enable.
 
   MFA is NOT fully automatable (enabling a virtual device needs two live TOTP codes).
@@ -21,8 +30,8 @@
 
   RUN:
     cd "D:\My projects\AEOS\infrastructure\aws"
-    powershell -ExecutionPolicy Bypass -File .\bootstrap-deploy.ps1
-    # add -EnableOidc to also create the GitHub Actions OIDC provider
+    powershell -ExecutionPolicy Bypass -File .\bootstrap-deploy.ps1 -EnableOidc
+    # -EnableOidc creates the GitHub Actions OIDC provider (referenced by the trust policy)
     # add -Yes to skip the confirmation prompt
 #>
 
@@ -42,17 +51,34 @@ $awsExe = "C:\Program Files\Amazon\AWSCLIV2\aws.exe"
 
 $bucket    = "aeos-tfstate-$Account"
 $lockTable = "aeos-tflock"
-$permFile  = Join-Path $PSScriptRoot "iam\aeos-deploy-permissions.json"
 $trustFile = Join-Path $PSScriptRoot "iam\aeos-deploy-trust.json"
-$policyArn = "arn:aws:iam::${Account}:policy/$PolicyName"
 
-foreach ($f in @($permFile, $trustFile)) {
+# Two managed policies (see header): control-plane vs services. Attached to the
+# same role. Each stays well under the 6144-char PolicySize limit with headroom
+# for the 14.2 apply loop to add denied actions.
+$policies = @(
+  [pscustomobject]@{ Name = $PolicyName
+                     File = Join-Path $PSScriptRoot "iam\aeos-deploy-permissions.json"
+                     Arn  = "arn:aws:iam::${Account}:policy/$PolicyName" }
+  [pscustomobject]@{ Name = "$PolicyName-services"
+                     File = Join-Path $PSScriptRoot "iam\aeos-deploy-services-permissions.json"
+                     Arn  = "arn:aws:iam::${Account}:policy/$PolicyName-services" }
+)
+$oidcArn = "arn:aws:iam::${Account}:oidc-provider/token.actions.githubusercontent.com"
+
+foreach ($f in @($trustFile) + ($policies.File)) {
   if (-not (Test-Path $f)) { throw "Required policy file not found: $f" }
 }
 
 # Small helper: returns $true if a CLI probe succeeds (resource exists).
 function Test-AwsExists([scriptblock]$probe) {
   try { & $probe *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false }
+}
+# Throw if the most recent native command failed ($ErrorActionPreference does NOT
+# apply to external exes, so mutating calls must be checked explicitly - the first
+# version of this script silently printed "created" over real failures).
+function Assert-LastExit([string]$what) {
+  if ($LASTEXITCODE -ne 0) { throw "AWS call failed: $what (exit $LASTEXITCODE). See error above." }
 }
 
 # --- 0. Confirm identity + intent -----------------------------------------
@@ -66,7 +92,7 @@ if ($ident.Account -ne $Account) {
 
 if (-not $Yes) {
   Write-Host "This will create/update in $Account/${Region}:" -ForegroundColor Yellow
-  Write-Host "  S3 $bucket | DynamoDB $lockTable | IAM policy+role $RoleName | IAM user $UserName" -ForegroundColor Yellow
+  Write-Host "  S3 $bucket | DynamoDB $lockTable | IAM policies $PolicyName(+services) | IAM user $UserName | IAM role $RoleName" -ForegroundColor Yellow
   if ($EnableOidc) { Write-Host "  + GitHub OIDC provider" -ForegroundColor Yellow }
   $ans = Read-Host "Proceed? (yes/no)"
   if ($ans -ne "yes") { Write-Host "Aborted."; exit 1 }
@@ -79,6 +105,7 @@ if (Test-AwsExists { & $awsExe s3api head-bucket --bucket $bucket }) {
 } else {
   # us-east-1 must NOT be given a LocationConstraint (it's the API default).
   & $awsExe s3api create-bucket --bucket $bucket --region $Region | Out-Null
+  Assert-LastExit "create-bucket $bucket"
   Write-Host "    created" -ForegroundColor Green
 }
 & $awsExe s3api put-bucket-versioning --bucket $bucket `
@@ -98,59 +125,51 @@ if (Test-AwsExists { & $awsExe dynamodb describe-table --table-name $lockTable -
     --attribute-definitions AttributeName=LockID,AttributeType=S `
     --key-schema AttributeName=LockID,KeyType=HASH `
     --billing-mode PAY_PER_REQUEST | Out-Null
+  Assert-LastExit "create-table $lockTable"
   Write-Host "    creating - waiting for ACTIVE..." -ForegroundColor Green
   & $awsExe dynamodb wait table-exists --table-name $lockTable --region $Region
   Write-Host "    active" -ForegroundColor Green
 }
 
-# --- 3. IAM policy (create or new default version) -------------------------
-Write-Host "==> [3/6] IAM policy $PolicyName" -ForegroundColor Cyan
-if (Test-AwsExists { & $awsExe iam get-policy --policy-arn $policyArn }) {
-  # AWS caps a policy at 5 versions; prune non-default ones before adding.
-  $versions = & $awsExe iam list-policy-versions --policy-arn $policyArn --output json | ConvertFrom-Json
-  $stale = $versions.Versions | Where-Object { -not $_.IsDefaultVersion }
-  if ($stale.Count -ge 4) {
-    $oldest = $stale | Sort-Object CreateDate | Select-Object -First 1
-    & $awsExe iam delete-policy-version --policy-arn $policyArn --version-id $oldest.VersionId | Out-Null
-    Write-Host "    pruned stale version $($oldest.VersionId)" -ForegroundColor DarkGray
+# --- 3. IAM policies (create or new default version) -----------------------
+Write-Host "==> [3/6] IAM policies (aeos-deploy + aeos-deploy-services)" -ForegroundColor Cyan
+foreach ($p in $policies) {
+  if (Test-AwsExists { & $awsExe iam get-policy --policy-arn $p.Arn }) {
+    # AWS caps a policy at 5 versions; prune non-default ones before adding.
+    $versions = & $awsExe iam list-policy-versions --policy-arn $p.Arn --output json | ConvertFrom-Json
+    $stale = $versions.Versions | Where-Object { -not $_.IsDefaultVersion }
+    if ($stale.Count -ge 4) {
+      $oldest = $stale | Sort-Object CreateDate | Select-Object -First 1
+      & $awsExe iam delete-policy-version --policy-arn $p.Arn --version-id $oldest.VersionId | Out-Null
+      Write-Host "    [$($p.Name)] pruned stale version $($oldest.VersionId)" -ForegroundColor DarkGray
+    }
+    & $awsExe iam create-policy-version --policy-arn $p.Arn `
+      --policy-document "file://$($p.File)" --set-as-default | Out-Null
+    Assert-LastExit "create-policy-version $($p.Name)"
+    Write-Host "    [$($p.Name)] updated (new default version)" -ForegroundColor Green
+  } else {
+    & $awsExe iam create-policy --policy-name $p.Name `
+      --policy-document "file://$($p.File)" | Out-Null
+    Assert-LastExit "create-policy $($p.Name)"
+    Write-Host "    [$($p.Name)] created" -ForegroundColor Green
   }
-  & $awsExe iam create-policy-version --policy-arn $policyArn `
-    --policy-document "file://$permFile" --set-as-default | Out-Null
-  Write-Host "    updated (new default version)" -ForegroundColor Green
-} else {
-  & $awsExe iam create-policy --policy-name $PolicyName `
-    --policy-document "file://$permFile" | Out-Null
-  Write-Host "    created" -ForegroundColor Green
 }
 
-# --- 4. IAM role (create or refresh trust) ---------------------------------
-Write-Host "==> [4/6] IAM role $RoleName" -ForegroundColor Cyan
-if (Test-AwsExists { & $awsExe iam get-role --role-name $RoleName }) {
-  & $awsExe iam update-assume-role-policy --role-name $RoleName `
-    --policy-document "file://$trustFile" | Out-Null
-  Write-Host "    exists - trust policy refreshed" -ForegroundColor Green
-} else {
-  & $awsExe iam create-role --role-name $RoleName `
-    --assume-role-policy-document "file://$trustFile" `
-    --description "AEOS scoped deploy role (Milestone 14.1)" | Out-Null
-  Write-Host "    created" -ForegroundColor Green
-}
-& $awsExe iam attach-role-policy --role-name $RoleName --policy-arn $policyArn | Out-Null
-Write-Host "    policy attached" -ForegroundColor Green
-
-# --- 5. IAM user (the human assumer) --------------------------------------
-Write-Host "==> [5/6] IAM user $UserName" -ForegroundColor Cyan
+# --- 4. IAM user (the human assumer) --------------------------------------
+# Created BEFORE the role: the trust policy names this user as a principal.
+Write-Host "==> [4/6] IAM user $UserName" -ForegroundColor Cyan
 if (Test-AwsExists { & $awsExe iam get-user --user-name $UserName }) {
   Write-Host "    exists" -ForegroundColor DarkGray
 } else {
   & $awsExe iam create-user --user-name $UserName | Out-Null
+  Assert-LastExit "create-user $UserName"
   Write-Host "    created" -ForegroundColor Green
 }
 
-# --- 6. Optional GitHub OIDC provider --------------------------------------
+# --- 5. GitHub OIDC provider ----------------------------------------------
+# Also created BEFORE the role: the trust policy names it as a Federated principal.
 if ($EnableOidc) {
-  Write-Host "==> [6/6] GitHub Actions OIDC provider" -ForegroundColor Cyan
-  $oidcArn = "arn:aws:iam::${Account}:oidc-provider/token.actions.githubusercontent.com"
+  Write-Host "==> [5/6] GitHub Actions OIDC provider" -ForegroundColor Cyan
   if (Test-AwsExists { & $awsExe iam get-open-id-connect-provider --open-id-connect-provider-arn $oidcArn }) {
     Write-Host "    exists" -ForegroundColor DarkGray
   } else {
@@ -160,10 +179,36 @@ if ($EnableOidc) {
       --url "https://token.actions.githubusercontent.com" `
       --client-id-list "sts.amazonaws.com" `
       --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" | Out-Null
+    Assert-LastExit "create-open-id-connect-provider"
     Write-Host "    created (verify thumbprint if you hit trust errors)" -ForegroundColor Green
   }
 } else {
-  Write-Host "==> [6/6] OIDC provider skipped (pass -EnableOidc to create)" -ForegroundColor DarkGray
+  Write-Host "==> [5/6] OIDC provider skipped (pass -EnableOidc to create)" -ForegroundColor DarkGray
+}
+
+# --- 6. IAM role (create or refresh trust) + attach both policies ----------
+Write-Host "==> [6/6] IAM role $RoleName" -ForegroundColor Cyan
+# The bundled trust references the OIDC provider unconditionally; fail early and
+# clearly if it is missing rather than emitting a cryptic MalformedPolicyDocument.
+if (-not (Test-AwsExists { & $awsExe iam get-open-id-connect-provider --open-id-connect-provider-arn $oidcArn })) {
+  throw "Trust policy references the GitHub OIDC provider but it does not exist. Re-run with -EnableOidc (or create it) before the role."
+}
+if (Test-AwsExists { & $awsExe iam get-role --role-name $RoleName }) {
+  & $awsExe iam update-assume-role-policy --role-name $RoleName `
+    --policy-document "file://$trustFile" | Out-Null
+  Assert-LastExit "update-assume-role-policy $RoleName"
+  Write-Host "    exists - trust policy refreshed" -ForegroundColor Green
+} else {
+  & $awsExe iam create-role --role-name $RoleName `
+    --assume-role-policy-document "file://$trustFile" `
+    --description "AEOS scoped deploy role (Milestone 14.1)" | Out-Null
+  Assert-LastExit "create-role $RoleName"
+  Write-Host "    created" -ForegroundColor Green
+}
+foreach ($p in $policies) {
+  & $awsExe iam attach-role-policy --role-name $RoleName --policy-arn $p.Arn | Out-Null
+  Assert-LastExit "attach-role-policy $($p.Name)"
+  Write-Host "    attached $($p.Name)" -ForegroundColor Green
 }
 
 # --- Done: what's left for the operator ------------------------------------

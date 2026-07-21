@@ -1,7 +1,10 @@
 # Milestone 14.2 — First Real `terraform apply` (Runbook + Capture Harness)
 
-**Status:** ⏳ NOT STARTED. This is the runbook; the apply itself is an interactive,
-credentialed, **billable** action you run — it is not automated here.
+**Status:** 🟡 BOOTSTRAP DONE — apply not yet run. P1 (state backend) and P2 (deploy
+principal: 2 policies + role + user + OIDC) were created for real against account
+660249531916 on 2026-07-21 via `bootstrap-deploy.ps1 -EnableOidc` from the root session.
+Remaining before the apply: enable MFA on `aeos-deployer` + give it programmatic access.
+The apply itself is an interactive, credentialed, **billable** action you run — not automated here.
 
 **Goal:** create the AEOS dev infrastructure for real, assuming the scoped
 `aeos-deploy` role (never root), and **capture every failure** (IAM denial, quota,
@@ -30,19 +33,27 @@ aws dynamodb create-table --table-name aeos-tflock \
 ```
 
 ### P2. Create the deploy principal (moves off root — Milestone 14.1 artifacts)
-From an admin session (this is the *last* thing you do as admin/root):
+From an admin/root session (this is the *last* thing you do as admin/root), just run
+the bootstrap script — it does P1 and P2 idempotently and in the correct order:
+```powershell
+cd "D:\My projects\AEOS\infrastructure\aws"
+powershell -ExecutionPolicy Bypass -File .\bootstrap-deploy.ps1 -EnableOidc
+```
+What it creates (order matters — the trust policy names both the user and the OIDC
+provider as principals, so they must exist before the role):
+1. state bucket + lock table (P1)
+2. **two** managed policies — `aeos-deploy` (control plane) + `aeos-deploy-services`
+   (EKS/ECR/RDS/ElastiCache/KMS/CloudWatch/S3-app). A single policy exceeds IAM's
+   6144-char `PolicySize` limit, and the apply loop below only grows it.
+3. `aeos-deployer` user → OIDC provider → `aeos-deploy` role with **both** policies attached.
+
+Then finish MFA by hand — the trust policy requires `aws:MultiFactorAuthPresent=true`:
 ```bash
-cd infrastructure/aws/iam
-aws iam create-policy --policy-name aeos-deploy \
-  --policy-document file://aeos-deploy-permissions.json
-aws iam create-role   --role-name aeos-deploy \
-  --assume-role-policy-document file://aeos-deploy-trust.json
-aws iam attach-role-policy --role-name aeos-deploy \
-  --policy-arn arn:aws:iam::660249531916:policy/aeos-deploy
-# The dedicated assumer (trust policy references it):
-aws iam create-user --user-name aeos-deployer
-# ...then enable MFA on aeos-deployer (console or CLI) — the trust policy
-#    requires aws:MultiFactorAuthPresent=true.
+aws iam create-virtual-mfa-device --virtual-mfa-device-name aeos-deployer \
+  --outfile qr.png --bootstrap-method QRCodePNG
+aws iam enable-mfa-device --user-name aeos-deployer \
+  --serial-number arn:aws:iam::660249531916:mfa/aeos-deployer \
+  --authentication-code-1 <code1> --authentication-code-2 <code2>
 ```
 
 ### P3. (Optional) GitHub OIDC for CI deploys
@@ -80,15 +91,20 @@ The harness (`scripts/capture_apply_failures.py`) prints, and writes
 
 | Class | What to do |
 |-------|-----------|
-| **Missing IAM actions** | It names the exact action (`is not authorized to perform: X`). Paste the suggested JSON snippet into the matching `Sid` in `aeos-deploy-permissions.json`. |
+| **Missing IAM actions** | It names the exact action (`is not authorized to perform: X`). Paste the suggested JSON snippet into the matching `Sid` in **the file that owns that service** — control-plane actions (ec2/iam/s3-state/dynamodb) → `aeos-deploy-permissions.json`; service actions (eks/ecr/rds/elasticache/kms/logs/cloudwatch/s3-app) → `aeos-deploy-services-permissions.json`. |
 | **EC2 UnauthorizedOperation** | EC2 often hides the action. Use the error-header context to see which resource failed, add the matching `ec2:*`. |
 | **Quota / limits** | Not a policy fix — request a Service Quota increase (e.g. VPCs/region, EIPs, RDS instances) or reduce the plan. |
 | **Backend / state** | Bucket/lock table missing or lock stuck → revisit P1. |
 
 ### After each fix
+Re-version whichever policy you edited (each is capped at 5 versions):
 ```bash
+# control-plane edits:
 aws iam create-policy-version --policy-arn arn:aws:iam::660249531916:policy/aeos-deploy \
   --policy-document file://../../../aws/iam/aeos-deploy-permissions.json --set-as-default
+# service edits:
+aws iam create-policy-version --policy-arn arn:aws:iam::660249531916:policy/aeos-deploy-services \
+  --policy-document file://../../../aws/iam/aeos-deploy-services-permissions.json --set-as-default
 ```
 Then re-run `run-apply.ps1`. Terraform is idempotent — it resumes from partial
 state and only creates what's missing. Repeat until the report shows
@@ -105,7 +121,12 @@ state and only creates what's missing. Repeat until the report shows
 - [ ] (If validation-only) `terraform destroy` run and confirmed clean.
 
 ## Honesty boundary
-- Nothing in this file has been executed against AWS. No principal, bucket, table,
-  or infrastructure has been created.
-- The deploy policy (14.1) is derived from resource *types*, not observed denials —
+- **Bootstrap (P1+P2) HAS been executed** against AWS account 660249531916 (2026-07-21):
+  the state bucket, lock table, `aeos-deploy` + `aeos-deploy-services` policies, the
+  `aeos-deploy` role, the `aeos-deployer` user, and the GitHub OIDC provider now exist.
+  The first bootstrap run surfaced two real bugs (PolicySize > 6144 → policy split;
+  role created before its principals → reordered); both fixed. See doc 043 when written.
+- **No terraform apply has run.** No VPC/EKS/RDS/ElastiCache/NAT — none of the 112
+  billable resources — has been created. MFA on `aeos-deployer` is still pending.
+- The deploy policy is still derived from resource *types*, not observed denials —
   **this milestone is exactly where that guess gets corrected.** Expect 1–3 iterations.
