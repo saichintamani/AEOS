@@ -27,10 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies to user-local prefix
-COPY requirements/base.txt requirements/prod.txt ./
-RUN pip install --user --no-warn-script-location \
-    -r base.txt \
-    -r prod.txt
+COPY requirements.txt ./
+RUN pip install --user --no-warn-script-location -r requirements.txt
 
 # ─── Stage 3: Development image (hot-reload, debug tools) ─────────────────────
 FROM base AS development
@@ -44,8 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements/base.txt requirements/dev.txt ./
-RUN pip install -r base.txt -r dev.txt
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 
 # Mount code as volume in docker-compose for hot-reload
 EXPOSE 8000

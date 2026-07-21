@@ -172,7 +172,15 @@ def cmd_start(
     ]
     if reload:
         cmd.append("--reload")
-    os.execv(sys.executable, cmd)
+    # Use subprocess rather than os.execv: on Windows, os.execv re-parses the
+    # command line and splits on spaces, so an interpreter path like
+    # "D:\My projects\AEOS\.venv\Scripts\python.exe" gets mangled. subprocess
+    # quotes list arguments correctly on every platform.
+    try:
+        proc = subprocess.run(cmd)
+        raise SystemExit(proc.returncode)
+    except KeyboardInterrupt:
+        raise SystemExit(0)
 
 
 # ── aeos cluster ──────────────────────────────────────────────────────────────

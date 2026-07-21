@@ -14,7 +14,7 @@ api:
   enabled: true
   name: aeos-api
   image:
-    repository: aeos-api
+    repository: aeos/api
     tag: "0.1.0"
     pullPolicy: IfNotPresent
 
@@ -109,7 +109,7 @@ worker:
   enabled: true
   name: aeos-worker
   image:
-    repository: aeos-worker
+    repository: aeos/worker
     tag: "0.1.0"
     pullPolicy: IfNotPresent
 
@@ -149,7 +149,7 @@ scheduler:
   enabled: true
   name: aeos-scheduler
   image:
-    repository: aeos-api    # runs from same image, different command
+    repository: aeos/api    # runs from same image, different command
     tag: "0.1.0"
     pullPolicy: IfNotPresent
 

@@ -16,11 +16,11 @@ groups:
     annotations:
       summary: "AEOS API is down"
       description: "The AEOS API ({{ $labels.instance }}) has been unreachable for 1 minute."
-      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+      runbook_url: "https://runbooks.aeos.example.com/dr-cluster-failure"
 
   - alert: AEOSAPIHighErrorRate
     expr: |
-      sum(rate(aeos_http_requests_total{status_class="5xx"}[5m])) /
+      sum(rate(aeos_http_requests_total{status_code=~"5.."}[5m])) /
       sum(rate(aeos_http_requests_total[5m])) > 0.01
     for: 3m
     labels:
@@ -30,10 +30,10 @@ groups:
     annotations:
       summary: "AEOS API error rate > 1%"
       description: "API 5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
-      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+      runbook_url: "https://runbooks.aeos.example.com/dr-cluster-failure"
 
   - alert: AEOSAPIHighLatencyP99
-    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 5
+    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_seconds_bucket[5m])) by (le)) > 5
     for: 5m
     labels:
       severity: warning
@@ -44,7 +44,7 @@ groups:
       description: "P99 API response time is {{ $value | humanizeDuration }}."
 
   - alert: AEOSAPIHighLatencyP99Critical
-    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 15
+    expr: histogram_quantile(0.99, sum(rate(aeos_http_request_duration_seconds_bucket[5m])) by (le)) > 15
     for: 2m
     labels:
       severity: critical
@@ -68,12 +68,12 @@ groups:
     annotations:
       summary: "All AEOS workers are down"
       description: "Zero available worker pods for 2 minutes. Tasks queuing up."
-      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-worker-failure.md"
+      runbook_url: "https://runbooks.aeos.example.com/dr-worker-failure"
 
   - alert: AEOSHighTaskFailureRate
     expr: |
-      sum(rate(aeos_task_executions_total{status="failed"}[5m])) /
-      sum(rate(aeos_task_executions_total[5m])) > 0.05
+      sum(rate(aeos_task_failed_total[5m])) /
+      (sum(rate(aeos_task_failed_total[5m])) + sum(rate(aeos_task_completed_total[5m]))) > 0.05
     for: 3m
     labels:
       severity: critical
@@ -118,7 +118,7 @@ groups:
     annotations:
       summary: "AEOS invariant violation detected"
       description: "{{ $value }} invariant violation(s) in the last minute. System correctness at risk."
-      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-cluster-failure.md"
+      runbook_url: "https://runbooks.aeos.example.com/dr-cluster-failure"
 
 - name: aeos.infrastructure
   interval: 60s
@@ -134,7 +134,7 @@ groups:
     annotations:
       summary: "Redis is down"
       description: "Redis instance {{ $labels.instance }} has been unreachable for 1 minute."
-      runbook_url: "https://github.com/YOUR_ORG/aeos/blob/main/docs/runbooks/dr-redis-failure.md"
+      runbook_url: "https://runbooks.aeos.example.com/dr-redis-failure"
 
   - alert: AEOSRedisMemoryHigh
     expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
@@ -176,7 +176,7 @@ groups:
   - alert: AEOSSLOAvailabilityBurning
     expr: |
       (1 - (
-        sum(rate(aeos_http_requests_total{status_class!="5xx"}[1h])) /
+        sum(rate(aeos_http_requests_total{status_code!~"5.."}[1h])) /
         sum(rate(aeos_http_requests_total[1h]))
       )) > (1 - 0.999) * 14.4
     for: 1m
@@ -190,7 +190,7 @@ groups:
 
   - alert: AEOSSLOLatencyBurning
     expr: |
-      histogram_quantile(0.99, sum(rate(aeos_http_request_duration_bucket[5m])) by (le)) > 2
+      histogram_quantile(0.99, sum(rate(aeos_http_request_duration_seconds_bucket[5m])) by (le)) > 2
     for: 15m
     labels:
       severity: warning
@@ -199,3 +199,115 @@ groups:
     annotations:
       summary: "AEOS latency SLO at risk (P99 > 2s for 15m)"
       description: "P99 latency SLO target is 1s. Currently {{ $value | humanizeDuration }}."
+
+# Kubernetes platform alerts (kube-state-metrics + node-exporter, scraped per
+# prometheus.yml). Merged from the former alerts.yml during Sprint 7 rule-file
+# reconciliation; AEOSPodCrashLooping/AEOSNodeDiskPressure already live in
+# aeos.infrastructure above, so they are intentionally not duplicated here.
+- name: aeos.kubernetes
+  interval: 60s
+  rules:
+
+  - alert: AEOSDeploymentReplicasMismatch
+    expr: |
+      kube_deployment_spec_replicas{namespace=~"aeos-.*"}
+      != kube_deployment_status_replicas_available{namespace=~"aeos-.*"}
+    for: 5m
+    labels:
+      severity: warning
+      component: kubernetes
+      layer: infrastructure
+    annotations:
+      summary: "Deployment {{ $labels.deployment }} has fewer replicas than desired"
+      description: "{{ $labels.namespace }}/{{ $labels.deployment }} available replicas below spec for 5 minutes."
+
+  - alert: AEOSNodeNotReady
+    expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      component: node
+      layer: infrastructure
+    annotations:
+      summary: "Kubernetes node {{ $labels.node }} is not ready"
+      description: "Node {{ $labels.node }} has not been Ready for 1 minute."
+
+  - alert: AEOSNodeHighCPU
+    expr: |
+      100 - (avg by(node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+    for: 10m
+    labels:
+      severity: warning
+      component: node
+      layer: infrastructure
+    annotations:
+      summary: "Node {{ $labels.node }} CPU > 90%"
+      description: "Node {{ $labels.node }} CPU utilization above 90% for 10 minutes."
+
+  - alert: AEOSNodeDiskSpaceLow
+    expr: |
+      (node_filesystem_avail_bytes{mountpoint="/"} /
+       node_filesystem_size_bytes{mountpoint="/"}) < 0.15
+    for: 5m
+    labels:
+      severity: warning
+      component: node
+      layer: infrastructure
+    annotations:
+      summary: "Node {{ $labels.instance }} disk space < 15%"
+      description: "Root filesystem free space below 15% on {{ $labels.instance }}."
+
+  - alert: AEOSPVCStorageLow
+    expr: |
+      (kubelet_volume_stats_available_bytes /
+       kubelet_volume_stats_capacity_bytes) < 0.20
+    for: 5m
+    labels:
+      severity: warning
+      component: storage
+      layer: infrastructure
+    annotations:
+      summary: "PVC {{ $labels.persistentvolumeclaim }} < 20% free"
+      description: "PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} has less than 20% free capacity."
+
+# Database alerts (postgres-exporter, scraped per prometheus.yml). Merged from
+# the former alerts.yml during Sprint 7 rule-file reconciliation.
+- name: aeos.database
+  interval: 60s
+  rules:
+
+  - alert: AEOSDatabaseConnectionsHigh
+    expr: |
+      pg_stat_database_numbackends{datname="aeos"} /
+      pg_settings_max_connections > 0.80
+    for: 5m
+    labels:
+      severity: warning
+      component: postgres
+      layer: infrastructure
+    annotations:
+      summary: "PostgreSQL connections at {{ $value | humanizePercentage }} capacity"
+      description: "PostgreSQL 'aeos' backend connections above 80% of max_connections."
+
+  - alert: AEOSDatabaseReplicationLag
+    expr: pg_replication_lag_seconds > 30
+    for: 5m
+    labels:
+      severity: warning
+      component: postgres
+      layer: infrastructure
+    annotations:
+      summary: "PostgreSQL replication lag: {{ $value }}s"
+      description: "Replica is more than 30s behind the primary."
+
+  - alert: AEOSDatabaseDown
+    expr: up{job="postgres"} == 0
+    for: 1m
+    labels:
+      severity: critical
+      component: postgres
+      layer: infrastructure
+    annotations:
+      summary: "PostgreSQL is down"
+      description: "The postgres-exporter target has been unreachable for 1 minute."
+      runbook_url: "https://runbooks.aeos.example.com/dr-rds-failure"

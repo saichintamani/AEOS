@@ -53,6 +53,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
     id     = "transition-to-ia"
     status = "Enabled"
 
+    filter {}
+
     transition {
       days          = 30
       storage_class = "STANDARD_IA"
@@ -109,6 +111,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
   rule {
     id     = "backup-retention"
     status = "Enabled"
+
+    filter {}
 
     transition {
       days          = 7

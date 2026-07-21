@@ -24,9 +24,27 @@ htmlcov/
 
 # ── Runtime data & generated artifacts ────────────────────────────────────────
 data/model_registry/*.pkl
+data/model_registry/*.joblib
+data/model_registry/*_meta.json
 data/**/*.sqlite*
 data/**/*.db
 *.log
+
+# ── Secrets: signing keys (NEVER commit private keys) ─────────────────────────
+data/keys/
+
+# ── Terraform: local provider cache, state, and plan binaries ─────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+infrastructure/terraform/environments/*/*.plan
+infrastructure/terraform/environments/*/plan-show.txt
+infrastructure/terraform/environments/*/plan-show.err
+
+# ── Generated benchmark / certification output ────────────────────────────────
+benchmark_results/
+reports/
 
 # ── Claude Code tooling (not part of the project) ─────────────────────────────
 .claude/
@@ -39,8 +57,8 @@ Thumbs.db
 data/rag/
 
 # ── Proto generated stubs (rebuilt by buf generate in CI) ─────────────────────
-app/distributed/grpc/generated/*_pb2.py
-app/distributed/grpc/generated/*_pb2_grpc.py
-app/distributed/grpc/generated/*_pb2.pyi
-# Keep the __init__.py placeholder
-!app/distributed/grpc/generated/__init__.py
+app/distributed/grpc/generated/**/*_pb2.py
+app/distributed/grpc/generated/**/*_pb2_grpc.py
+app/distributed/grpc/generated/**/*_pb2.pyi
+# Keep the __init__.py placeholders (package markers, not generated stubs)
+!app/distributed/grpc/generated/**/__init__.py

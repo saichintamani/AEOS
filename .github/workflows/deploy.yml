@@ -131,6 +131,7 @@ jobs:
           --namespace aeos-api \
           --create-namespace \
           -f infrastructure/helm/aeos/values-staging.yaml \
+          --set global.imageRegistry=${{ env.ECR_REGISTRY }} \
           --set api.image.tag=sha-${{ github.sha }} \
           --set worker.image.tag=sha-${{ github.sha }} \
           --set global.environment=staging \
@@ -189,6 +190,7 @@ jobs:
           --namespace aeos-api \
           --create-namespace \
           -f infrastructure/helm/aeos/values-production.yaml \
+          --set global.imageRegistry=${{ env.ECR_REGISTRY }} \
           --set api.image.tag=sha-${{ github.sha }} \
           --set worker.image.tag=sha-${{ github.sha }} \
           --set global.environment=production \

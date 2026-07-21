@@ -256,3 +256,93 @@ class RemoteJWKSClient:
 def _b64url(data: bytes) -> str:
     """URL-safe base64 encoding without padding (RFC 7515 §2)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_int(value: str) -> int:
+    """Decode a URL-safe base64 JWK field (x/y/n/e) into an integer."""
+    raw = value.encode() if isinstance(value, str) else value
+    padding = (-len(raw)) % 4
+    raw = raw + b"=" * padding
+    return int.from_bytes(base64.urlsafe_b64decode(raw), "big")
+
+
+def _public_key_from_jwk(jwk: dict[str, Any]) -> ManagedKey:
+    """Reconstruct a verify-only ``ManagedKey`` (public part only) from a JWK.
+
+    This is the import side of the JWKS contract: given a public JWK a remote
+    cluster published, rebuild the public key object so an AEOS ``TokenVerifier``
+    can check signatures made by that cluster — WITHOUT ever seeing its private
+    key. The inverse of ``JWK.to_dict``.
+    """
+    kty = jwk.get("kty")
+    kid = jwk.get("kid", "")
+    if kty == "EC":
+        from cryptography.hazmat.primitives.asymmetric.ec import (
+            EllipticCurvePublicNumbers, SECP256R1,
+        )
+        x = _b64url_int(jwk["x"])
+        y = _b64url_int(jwk["y"])
+        public_key = EllipticCurvePublicNumbers(x, y, SECP256R1()).public_key()
+        algorithm = KeyAlgorithm.ES256
+    elif kty == "RSA":
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
+        n = _b64url_int(jwk["n"])
+        e = _b64url_int(jwk["e"])
+        public_key = RSAPublicNumbers(e, n).public_key()
+        algorithm = KeyAlgorithm.RS256
+    else:
+        raise ValueError(f"unsupported JWK key type: {kty!r}")
+
+    key = ManagedKey(
+        kid=kid, algorithm=algorithm,
+        created_at=0.0, expires_at=float("inf"), retire_at=float("inf"),
+    )
+    key._public_key = public_key
+    return key
+
+
+class JWKSKeyStore:
+    """A verify-only, in-memory key set built from a remote cluster's JWKS.
+
+    Exposes the minimal surface ``TokenVerifier`` needs (``get_key`` /
+    ``public_keys``) so an AEOS verifier can validate another cluster's tokens
+    from that cluster's *published public keys* alone. Holds no private keys and
+    cannot sign — this is exactly the asymmetry federation trust relies on.
+    """
+
+    def __init__(self, jwks: dict[str, Any]) -> None:
+        self._by_kid: dict[str, ManagedKey] = {}
+        for jwk in jwks.get("keys", []):
+            try:
+                key = _public_key_from_jwk(jwk)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("JWKSKeyStore: skipping malformed JWK: %s", exc)
+                continue
+            self._by_kid[key.kid] = key
+
+    def get_key(self, kid: str) -> ManagedKey | None:
+        return self._by_kid.get(kid)
+
+    def public_keys(self) -> list[ManagedKey]:
+        return list(self._by_kid.values())
+
+
+def verifier_from_jwks(
+    jwks: dict[str, Any],
+    issuer: str,
+    *,
+    clock_skew_seconds: float = 30.0,
+):
+    """Build a ``TokenVerifier`` that validates ``issuer``'s tokens from its JWKS.
+
+    The production federation path is: fetch the peer's ``/.well-known/jwks.json``
+    (``RemoteJWKSClient``), then verify its tokens with this verifier. Imported
+    here lazily to avoid a circular import with ``token_verifier``.
+    """
+    from .token_verifier import TokenVerifier
+
+    return TokenVerifier(
+        JWKSKeyStore(jwks),  # type: ignore[arg-type]
+        issuer=issuer,
+        clock_skew_seconds=clock_skew_seconds,
+    )

@@ -24,7 +24,7 @@ output "ecr_worker_url" {
 }
 
 output "redis_endpoint" {
-  value     = module.elasticache.primary_endpoint
+  value     = module.elasticache.configuration_endpoint
   sensitive = true
 }
 

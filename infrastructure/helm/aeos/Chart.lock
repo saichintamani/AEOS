@@ -1,0 +1,12 @@
+dependencies:
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 19.6.4
+- name: kafka
+  repository: https://charts.bitnami.com/bitnami
+  version: 29.3.14
+- name: qdrant
+  repository: https://qdrant.to/helm
+  version: 0.10.1
+digest: sha256:fdf47fe54585a0649b5efa2f6d76932adfccf1af363f3b8835bad2d47270831f
+generated: "2026-07-20T23:23:57.8902084+05:30"

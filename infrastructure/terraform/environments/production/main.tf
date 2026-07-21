@@ -15,8 +15,13 @@ terraform {
     }
   }
 
+  # Partial backend config. `bucket` is intentionally omitted: an S3 backend
+  # cannot interpolate variables, so a hardcoded account-scoped name is a deploy
+  # trap (it silently targets a nonexistent bucket). Supply the real bucket at
+  # init time, once the state bucket + lock table are bootstrapped per account:
+  #   terraform init -backend-config="bucket=aeos-tfstate-<ACCOUNT_ID>"
+  # See infrastructure/README.md → "Bootstrap Terraform remote state".
   backend "s3" {
-    bucket         = "aeos-tfstate-PROD_ACCOUNT_ID"
     key            = "production/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
@@ -110,14 +115,16 @@ module "ecr" {
 module "elasticache" {
   source = "../../modules/elasticache"
 
-  name               = local.prefix
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.intra_subnet_ids
-  node_type          = "cache.r7g.xlarge"
-  num_cache_clusters = 3   # 1 primary + 2 replicas across 3 AZs
-  auth_token         = var.redis_auth_token
-  sns_topic_arn      = module.alerts_sns.topic_arn
-  tags               = local.tags
+  name                       = local.prefix
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = module.vpc.intra_subnet_ids
+  node_type                  = "cache.r7g.xlarge"
+  num_node_groups            = 3   # 3 shards across 3 AZs
+  replicas_per_node_group    = 2   # 2 replicas per shard for HA
+  allowed_security_group_ids = [module.eks.node_security_group_id]
+  auth_token                 = var.redis_auth_token
+  sns_topic_arn              = aws_sns_topic.alerts.arn
+  tags                       = local.tags
 }
 
 ## ─── RDS — Multi-AZ with read replica ───────────────────────────────────
@@ -125,18 +132,19 @@ module "elasticache" {
 module "rds" {
   source = "../../modules/rds"
 
-  name                  = local.prefix
-  vpc_id                = module.vpc.vpc_id
-  subnet_ids            = module.vpc.intra_subnet_ids
-  instance_class        = "db.r8g.2xlarge"
-  master_password       = var.db_password
-  multi_az              = true
-  deletion_protection   = true
-  backup_retention_days = 14
-  allocated_storage     = 500
-  max_allocated_storage = 5000
-  create_replica        = true
-  tags                  = local.tags
+  name                       = local.prefix
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = module.vpc.intra_subnet_ids
+  instance_class             = "db.r8g.2xlarge"
+  master_password            = var.db_password
+  allowed_security_group_ids = [module.eks.node_security_group_id]
+  multi_az                   = true
+  deletion_protection        = true
+  backup_retention_days      = 14
+  allocated_storage          = 500
+  max_allocated_storage      = 5000
+  create_replica             = true
+  tags                       = local.tags
 }
 
 ## ─── S3 ───────────────────────────────────────────────────────────────────
@@ -165,10 +173,6 @@ resource "aws_sns_topic_subscription" "email" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
   endpoint  = each.value
-}
-
-locals {
-  alerts_sns = { topic_arn = aws_sns_topic.alerts.arn }
 }
 
 ## ─── CloudWatch ───────────────────────────────────────────────────────────
@@ -203,8 +207,8 @@ output "ecr_registry" {
 }
 
 output "redis_endpoint" {
-  description = "ElastiCache Redis primary endpoint"
-  value       = module.elasticache.primary_endpoint
+  description = "ElastiCache Redis Cluster configuration endpoint (cluster-mode aware clients use this)"
+  value       = module.elasticache.configuration_endpoint
   sensitive   = true
 }
 

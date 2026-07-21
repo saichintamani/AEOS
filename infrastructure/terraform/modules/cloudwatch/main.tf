@@ -226,7 +226,7 @@ resource "aws_cloudwatch_dashboard" "aeos" {
     widgets = [
       {
         type   = "metric"
-        x      = 0; y = 0; width = 12; height = 6
+        x      = 0, y = 0, width = 12, height = 6
         properties = {
           title  = "API Request Rate"
           view   = "timeSeries"
@@ -240,7 +240,7 @@ resource "aws_cloudwatch_dashboard" "aeos" {
       },
       {
         type   = "metric"
-        x      = 12; y = 0; width = 12; height = 6
+        x      = 12, y = 0, width = 12, height = 6
         properties = {
           title  = "Task Throughput (tasks/min)"
           view   = "timeSeries"
@@ -254,7 +254,7 @@ resource "aws_cloudwatch_dashboard" "aeos" {
       },
       {
         type   = "alarm"
-        x      = 0; y = 6; width = 24; height = 4
+        x      = 0, y = 6, width = 24, height = 4
         properties = {
           title = "AEOS Alarms"
           alarms = [

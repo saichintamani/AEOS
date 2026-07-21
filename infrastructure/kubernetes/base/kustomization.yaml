@@ -4,7 +4,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: aeos-api
+# NOTE: no top-level `namespace:` directive. This base spans four namespaces
+# (aeos-api, aeos-jobs, aeos-data, aeos-monitoring) and every resource declares
+# its own `metadata.namespace`. A top-level namespace here would rewrite the
+# Namespace objects themselves to a single name and fail to render with
+# "namespace transformation produces ID conflict".
 
 resources:
 # Namespace declarations (sets up aeos-api, aeos-jobs, aeos-data, aeos-monitoring)
@@ -17,6 +21,9 @@ resources:
 - api-deployment.yaml
 - worker-deployment.yaml
 - scheduler-deployment.yaml
+
+# Cross-cluster federation control plane (gateway, service, trust, JWKS, routing)
+- federation.yaml
 
 # Data layer StatefulSets
 - redis-statefulset.yaml
@@ -48,3 +55,26 @@ commonLabels:
 
 commonAnnotations:
   app.kubernetes.io/version: "0.1.0"
+
+# Image substitution targets. The base ships placeholder image references
+# (REGISTRY_PLACEHOLDER/<name>:VERSION_PLACEHOLDER) because the registry and tag
+# are environment-specific. An operator/CI resolves them in one command per image
+# instead of editing every Deployment manifest, e.g.:
+#
+#   cd infrastructure/kubernetes/base
+#   kustomize edit set image \
+#     REGISTRY_PLACEHOLDER/aeos-api=<acct>.dkr.ecr.us-east-1.amazonaws.com/aeos/api:sha-<git> \
+#     REGISTRY_PLACEHOLDER/aeos-worker=<acct>.dkr.ecr.us-east-1.amazonaws.com/aeos/worker:sha-<git>
+#   kubectl apply -k .
+#
+# The entries below make the two application images explicit substitution targets
+# (aeos-api covers the API + scheduler; aeos-worker covers the worker + federation
+# gateway). Third-party images (redis, kafka, qdrant, busybox) are pinned in their
+# manifests and intentionally excluded.
+images:
+- name: REGISTRY_PLACEHOLDER/aeos-api
+  newName: REGISTRY_PLACEHOLDER/aeos-api
+  newTag: VERSION_PLACEHOLDER
+- name: REGISTRY_PLACEHOLDER/aeos-worker
+  newName: REGISTRY_PLACEHOLDER/aeos-worker
+  newTag: VERSION_PLACEHOLDER

@@ -1,6 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Dockerfile.worker — AEOS Background Worker (Celery)
-# Handles: OSIP repository analysis, RAG ingestion, report generation
+# Dockerfile.worker — AEOS Background Worker (app.distributed runtime)
+# Runs the WorkerRuntime process (task execution host); serves /health,
+# /health/ready and /metrics on port 9090. NOT Celery — AEOS uses its own
+# app.distributed runtime.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FROM python:3.11-slim-bookworm AS base
@@ -8,8 +10,7 @@ FROM python:3.11-slim-bookworm AS base
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app \
-    C_FORCE_ROOT=0
+    PYTHONPATH=/app
 
 # ─── Builder ──────────────────────────────────────────────────────────────────
 FROM base AS builder
@@ -20,9 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ make libpq-dev git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements/base.txt requirements/prod.txt requirements/worker.txt ./
-RUN pip install --user --no-warn-script-location \
-    -r base.txt -r prod.txt -r worker.txt
+COPY requirements.txt ./
+RUN pip install --user --no-warn-script-location -r requirements.txt
 
 # ─── Production ───────────────────────────────────────────────────────────────
 FROM base AS production
@@ -51,19 +51,15 @@ USER aeos
 
 ENV PATH="/home/aeos/.local/bin:${PATH}"
 
-# Health: verify Celery worker can respond to ping
-HEALTHCHECK --interval=60s \
-            --timeout=10s \
+EXPOSE 9090
+
+# Health: the worker process serves /health on its metrics port (9090).
+# Uses stdlib urllib so no extra package (curl) is required in the runtime image.
+HEALTHCHECK --interval=30s \
+            --timeout=5s \
             --start-period=30s \
             --retries=3 \
-    CMD celery -A app.workers inspect ping --destination "celery@$HOSTNAME" || exit 1
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9090/health',timeout=3).status==200 else 1)" || exit 1
 
-# --max-tasks-per-child: restart worker process after 100 tasks (prevent memory leaks)
-# --concurrency 4: 4 parallel tasks per worker pod (I/O bound)
-CMD ["celery", \
-     "-A", "app.workers", \
-     "worker", \
-     "--loglevel=info", \
-     "--concurrency=4", \
-     "--max-tasks-per-child=100", \
-     "--queues=default,osip,rag,reports"]
+# Run the real AEOS worker runtime process.
+CMD ["python", "-m", "app.distributed.worker"]

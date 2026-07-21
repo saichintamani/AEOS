@@ -121,10 +121,21 @@ kubectl apply -k infrastructure/kubernetes/istio/
 ## Deploy to AWS (Terraform + Helm)
 
 ```bash
-# 1. Bootstrap Terraform state bucket (one-time, per-account)
+# 0. Bootstrap Terraform remote state (one-time, per-account).
+#    The S3 backend cannot interpolate variables, so the state bucket + lock
+#    table must exist BEFORE `terraform init`. Create them once with the AWS CLI:
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws s3api create-bucket --bucket "aeos-tfstate-${ACCOUNT_ID}" --region us-east-1
+aws s3api put-bucket-versioning --bucket "aeos-tfstate-${ACCOUNT_ID}" \
+  --versioning-configuration Status=Enabled
+aws dynamodb create-table --table-name aeos-tflock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST --region us-east-1
+
+# 1. Init with the resolved bucket (partial backend config).
 cd infrastructure/terraform/environments/production
-terraform init
-terraform apply -target=module.s3 -var-file=terraform.tfvars
+terraform init -backend-config="bucket=aeos-tfstate-${ACCOUNT_ID}"
 
 # 2. Provision all infrastructure
 terraform apply -var-file=terraform.tfvars
@@ -135,6 +146,7 @@ aws eks update-kubeconfig --name aeos-production --region us-east-1
 # 4. Deploy AEOS via Helm
 helm upgrade --install aeos infrastructure/helm/aeos \
   -f infrastructure/helm/aeos/values-production.yaml \
+  --set global.imageRegistry="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com" \
   --set api.image.tag=<GIT_SHA> \
   --set worker.image.tag=<GIT_SHA> \
   --namespace aeos-api \

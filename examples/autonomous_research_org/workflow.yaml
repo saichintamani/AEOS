@@ -1,0 +1,106 @@
+# AEOS Example — Autonomous Research Organization
+#
+# Declarative definition of a self-governing research org. Each step maps to a
+# role in the organization. The engine in org.py executes these stages, records
+# every decision in a tamper-evident ledger, and enforces a governance gate
+# before anything is published.
+#
+# Roles:
+#   planner          — decomposes the question into an investigation plan
+#   researcher       — gathers evidence for each plan item
+#   critic           — adversarially critiques the drafted findings
+#   reviewer         — checks the revised draft for quality + policy compliance
+#   governance-board — final gate: approves or rejects publication with rationale
+#
+# Usage:
+#   python run.py --question "What are the trade-offs of Raft vs Paxos?"
+#   python run.py --question "..." --offline   # deterministic, no server needed
+
+workflow:
+  name: autonomous-research-org
+  description: |
+    A self-governing research organization. A question flows through planning,
+    evidence gathering, critique, revision, reviewer sign-off, and a governance
+    board gate before final publication. Every decision is recorded in a
+    hash-chained audit ledger so the full provenance is traceable.
+  version: "1.0"
+  agents:
+    - planner
+    - researcher
+    - critic
+    - reviewer
+    - governance-board
+
+  steps:
+    - name: plan
+      role: planner
+      task: |
+        You are the PLANNER of a research organization. Decompose the research
+        question into a concise investigation plan of 3-5 numbered sub-questions.
+        Question: {question}
+
+        Output ONLY the numbered sub-questions, one per line.
+      mode: single-agent
+      agent: planner
+      timeout_s: 45
+
+    - name: research
+      role: researcher
+      task: |
+        You are the RESEARCHER. For the investigation plan below, gather the key
+        evidence and findings for each sub-question. Be concrete and cite the
+        reasoning behind each claim.
+
+        Plan:
+        {plan}
+
+        Original question: {question}
+      mode: single-agent
+      agent: researcher
+      depends_on: [plan]
+      timeout_s: 60
+
+    - name: critique
+      role: critic
+      task: |
+        You are the CRITIC. Adversarially review the draft findings below. List
+        every weakness: unsupported claims, missing counter-evidence, overreach,
+        and gaps. End with a single line: "SEVERITY: LOW | MEDIUM | HIGH".
+
+        Draft findings:
+        {research}
+      mode: single-agent
+      agent: critic
+      depends_on: [research]
+      timeout_s: 45
+
+    - name: revise
+      role: researcher
+      task: |
+        You are the RESEARCHER revising your draft in response to the critic.
+        Address each critique point. Produce the improved findings.
+
+        Original findings:
+        {research}
+
+        Critic's findings:
+        {critique}
+      mode: single-agent
+      agent: researcher
+      depends_on: [critique]
+      timeout_s: 60
+
+    - name: review
+      role: reviewer
+      task: |
+        You are the REVIEWER. Assess the revised findings for quality, evidence
+        sufficiency, and policy compliance (no unsupported absolute claims, no
+        unsafe recommendations). End with exactly one line:
+        "VERDICT: APPROVE" or "VERDICT: REVISE".
+
+        Revised findings:
+        {revise}
+      mode: single-agent
+      agent: reviewer
+      depends_on: [revise]
+      timeout_s: 45

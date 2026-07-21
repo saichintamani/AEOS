@@ -112,6 +112,17 @@ class WorkerRuntime:
     async def start(self) -> None:
         self._running = True
         await self._governance.start()
+        # Consume TASK_ACCEPTED from the transport so the runtime is driven by
+        # real dispatched events (in-process OR over the gRPC event bus), not
+        # only by direct _on_task_accepted() calls. The consumer's start()
+        # activates every pending subscription (governance topics registered by
+        # GovernanceClient.start() above, plus this one) on the transport.
+        await self._consumer.subscribe(
+            [DistributedEventType.TASK_ACCEPTED],
+            self._on_task_accepted,
+            self._identity.node_id,
+        )
+        await self._consumer.start()
         await self._heartbeat.start()
         self._dispatch_task = asyncio.create_task(
             self._dispatch_loop(), name=f"dispatch-{self.node_id}"
@@ -119,6 +130,7 @@ class WorkerRuntime:
 
     async def stop(self) -> None:
         self._running = False
+        await self._consumer.stop()
         await self._governance.stop()
         await self._heartbeat.stop()
         if self._dispatch_task:

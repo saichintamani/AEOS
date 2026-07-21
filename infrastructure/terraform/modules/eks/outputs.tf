@@ -38,6 +38,11 @@ output "node_group_role_arn" {
   value       = aws_iam_role.node_group.arn
 }
 
+output "node_security_group_id" {
+  description = "EKS-managed cluster security group attached to managed node group ENIs; grant this ingress on RDS/ElastiCache so worker pods can reach the data plane"
+  value       = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+}
+
 output "kms_key_arn" {
   description = "KMS key ARN used for secrets encryption"
   value       = aws_kms_key.eks.arn

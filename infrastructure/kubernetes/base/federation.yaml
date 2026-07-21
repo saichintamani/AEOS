@@ -1,0 +1,290 @@
+## ═══════════════════════════════════════════════════════════════════════════════
+## AEOS Federation Gateway — cross-cluster trust control plane
+##
+## Deploys the federation CONTROL plane (handshake, session-token trust, JWKS
+## exposure, trust-gated admission into the local scheduler). Runs the existing
+## `python -m app.distributed.federation` entrypoint from the SAME worker image
+## (command override) — no separate image is required.
+##
+## Scope note (honest): this gateway terminates federation trust and admits
+## authorized federated tasks into the local scheduler registry. It does NOT
+## itself execute remote workloads — remote execution needs a production
+## WorkerRuntime-backed execute_fn seam that does not yet exist (see
+## app/distributed/federation/__main__.py docstring and doc 034).
+## ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aeos-federation-sa
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: aeos
+---
+## Trust distribution — peer cluster JWKS URLs + scheduler endpoints.
+## Each entry tells THIS cluster where to fetch a peer's public keys so it can
+## verify tokens/evidence the peer signs (RemoteJWKSClient / verifier_from_jwks).
+## Populate `peers.json` per environment overlay; the placeholder domains use the
+## RFC-2606 example.com convention already used elsewhere in this repo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aeos-federation-trust
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: aeos
+data:
+  peers.json: |
+    {
+      "peers": [
+        {
+          "cluster_id": "aeos-peer-west",
+          "jwks_url": "https://federation.west.aeos.example.com/.well-known/jwks.json",
+          "federation_endpoint": "federation.west.aeos.example.com:50051"
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aeos-federation-gateway
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: aeos
+    version: v1
+spec:
+  # Single replica: each gateway generates its own signing key at startup, so
+  # multiple replicas would publish divergent JWKS and a peer could not verify a
+  # token signed by a different replica. To scale >1, mount a SHARED signing key
+  # from a Secret (External Secrets) at TOKEN_KEYS_DIR instead of the emptyDir
+  # below, then raise replicas. See docs/architecture/034.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: aeos-federation
+  template:
+    metadata:
+      labels:
+        app: aeos-federation
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: aeos-federation-sa
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        workload-type: general
+      containers:
+      - name: federation
+        image: REGISTRY_PLACEHOLDER/aeos-worker:VERSION_PLACEHOLDER
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "app.distributed.federation"]
+        ports:
+        - name: grpc
+          containerPort: 50051
+          protocol: TCP
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: aeos-config
+        env:
+        - name: FEDERATION_GRPC_PORT
+          value: "50051"
+        - name: FEDERATION_HTTP_PORT
+          value: "8080"
+        # Distinct per-cluster identity; overridden per environment overlay.
+        - name: FEDERATION_CLUSTER_ID
+          value: "aeos-cluster-local"
+        - name: FEDERATION_REGION
+          value: "us-east-1"
+        # The externally reachable JWKS URL this cluster advertises to peers.
+        - name: FEDERATION_JWKS_URL
+          value: "https://federation.aeos.example.com/.well-known/jwks.json"
+        # Ephemeral per-pod signing keys (see replicas note above).
+        - name: TOKEN_KEYS_DIR
+          value: "/var/run/aeos/keys"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          failureThreshold: 20
+          periodSeconds: 3
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: keys
+          mountPath: /var/run/aeos/keys
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: keys
+        emptyDir: {}
+      imagePullSecrets:
+      - name: ecr-pull-secret
+---
+## Federation service — gRPC (cross-cluster) + HTTP (JWKS/probes). ClusterIP;
+## cross-cluster reachability is provided by the Ingress below.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aeos-federation
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  selector:
+    app: aeos-federation
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: grpc
+    protocol: TCP
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP
+---
+## Cross-cluster routing — external entry for peer clusters.
+##  * gRPC listener (HTTP/2) → FederationService for handshake/dispatch.
+##  * /.well-known/jwks.json  → peers fetch this cluster's public keys.
+## ALB routes HTTP/2 to the gRPC port when backend-protocol-version is GRPC.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aeos-federation
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/part-of: aeos
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/certificate-arn: ACM_CERT_ARN_PLACEHOLDER
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: "8080"
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/tags: env=production,team=platform,component=federation
+spec:
+  rules:
+  - host: federation.aeos.example.com
+    http:
+      paths:
+      # JWKS + probes over HTTP (peers verify this cluster's keys).
+      - path: /.well-known/jwks.json
+        pathType: Exact
+        backend:
+          service:
+            name: aeos-federation
+            port:
+              number: 8080
+      # Federation gRPC (handshake / dispatch / result).
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: aeos-federation
+            port:
+              number: 50051
+---
+## Zero-trust network policy — restrict federation pod ingress/egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aeos-federation
+  namespace: aeos-jobs
+  labels:
+    app.kubernetes.io/name: aeos-federation
+    app.kubernetes.io/part-of: aeos
+spec:
+  podSelector:
+    matchLabels:
+      app: aeos-federation
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # gRPC + JWKS/probes from the ALB (and in-cluster callers).
+  - ports:
+    - port: 50051
+      protocol: TCP
+    - port: 8080
+      protocol: TCP
+  egress:
+  # DNS
+  - to: []
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # HTTPS egress to peer clusters (fetch peer JWKS, cross-cluster gRPC/TLS).
+  - to: []
+    ports:
+    - port: 443
+      protocol: TCP
+    - port: 50051
+      protocol: TCP

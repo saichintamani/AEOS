@@ -1,0 +1,21 @@
+{
+  "question": "What are the trade-offs of Raft versus Paxos for consensus?",
+  "approved": true,
+  "governance": {
+    "passed": [
+      "GOV-1-plan-present",
+      "GOV-2-evidence-present",
+      "GOV-3-critique-addressed",
+      "GOV-4-critique-not-high",
+      "GOV-5-reviewer-approved"
+    ],
+    "failed": [],
+    "rationale": "All 5 governance policies passed."
+  },
+  "revision_rounds": 1,
+  "chain_head": "e3aa0c230ce1e3245ccccde8cd36044158a289334dc7e2e84381be8dae392113",
+  "chain_verified": true,
+  "chain_broken_at": null,
+  "num_decisions": 6,
+  "generated_at": "2026-07-20T18:04:54.042+00:00"
+}

@@ -44,8 +44,8 @@ spec:
           periodSeconds: 15
       selectPolicy: Max
 {{- end }}
+{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled }}
 ---
-{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled -}}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

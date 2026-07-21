@@ -26,8 +26,8 @@ output "ecr_worker_url" {
 }
 
 output "redis_endpoint" {
-  description = "ElastiCache Redis primary endpoint"
-  value       = module.elasticache.primary_endpoint
+  description = "ElastiCache Redis Cluster configuration endpoint (cluster-mode aware)"
+  value       = module.elasticache.configuration_endpoint
   sensitive   = true
 }
 

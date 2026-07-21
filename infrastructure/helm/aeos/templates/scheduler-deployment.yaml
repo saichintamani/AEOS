@@ -42,7 +42,7 @@ spec:
 
       containers:
       - name: scheduler
-        image: {{ include "aeos.image" (dict "image" .Values.scheduler.image "global" .Values.global) }}
+        image: {{ include "aeos.image" (dict "Values" .Values "image" .Values.scheduler.image) }}
         imagePullPolicy: {{ .Values.scheduler.image.pullPolicy }}
         command: ["python", "-m", "app.scheduler"]
         ports:

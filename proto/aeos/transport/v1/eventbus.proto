@@ -1,0 +1,89 @@
+// proto/aeos/transport/v1/eventbus.proto
+//
+// AEOS Event Bus API — v1
+//
+// A minimal, transport-level pub/sub service that carries opaque
+// TransportMessage bytes between physically separate AEOS nodes over gRPC.
+// This is the wire realization of the MessageTransport contract
+// (app/distributed/contracts/transport.py): the domain event system
+// (publisher/consumer/router) rides on top of it unchanged.
+//
+// Unlike the domain services (SchedulerService, WorkerService, ...), the bus
+// is schema-agnostic: it moves bytes plus routing headers and never inspects
+// the payload. Serialization of domain events happens one layer up.
+//
+// Governance: breaking changes require a version bump (v1 → v2).
+// Lint:       enforced by `buf lint` in CI (proto-governance.yml).
+
+syntax = "proto3";
+
+package aeos.transport.v1;
+
+option go_package = "github.com/aeos/aeos-platform/gen/go/aeos/transport/v1;transportv1";
+option java_package = "io.aeos.transport.v1";
+option java_outer_classname = "EventBusProto";
+
+// A raw message as seen by the transport layer — mirrors the Python
+// TransportMessage dataclass field-for-field so serialization is lossless.
+message BusMessage {
+  // Logical topic the message is published to.
+  string topic = 1;
+
+  // Opaque serialized event payload (the transport never decodes this).
+  bytes payload = 2;
+
+  // Unique message identifier (UUID v4).
+  string message_id = 3;
+
+  // ISO-8601 timestamp string set by the producer.
+  string produced_at = 4;
+
+  // Cross-cutting headers (schema version, trace context, etc.).
+  map<string, string> headers = 5;
+
+  // Optional partition/offset/key hints (0/empty when unused).
+  int32 partition = 6;
+  int64 offset = 7;
+  bytes key = 8;
+
+  // W3C trace context — propagated across the service boundary.
+  string trace_id = 9;
+  string span_id = 10;
+
+  // Identity of the node that published this message (for loop/echo control
+  // and audit). Set by the transport, not the domain layer.
+  string origin_node_id = 11;
+}
+
+// Acknowledgement returned by the receiving node after it has enqueued the
+// message for local delivery (NOT after handlers complete — delivery is async).
+message DeliverAck {
+  // True when the receiving node accepted the message for local dispatch.
+  bool accepted = 1;
+
+  // Number of local subscriber groups the message was fanned out to
+  // (informational; 0 means no local subscribers for the topic).
+  uint32 local_group_count = 2;
+
+  // Populated on rejection (e.g., node draining).
+  string error = 3;
+}
+
+// AEOS Event Bus Service — hosted by every node; peers call DeliverEvent to
+// push a published message to this node for local subscriber dispatch.
+service EventBusService {
+  // Deliver a single published message to this node.
+  rpc DeliverEvent(BusMessage) returns (DeliverAck);
+
+  // Liveness probe used by peers before routing (cheap, no side effects).
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message PingRequest {
+  string from_node_id = 1;
+}
+
+message PingResponse {
+  string node_id = 1;
+  bool healthy = 2;
+}

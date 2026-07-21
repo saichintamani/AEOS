@@ -117,6 +117,54 @@ message RemoteCapabilitySummary {
   google.protobuf.Timestamp sampled_at = 5;
 }
 
+// ── Remote Execution Result + Evidence ─────────────────────────────────────
+
+// Tamper-evident proof that the executing cluster ran a specific task. The
+// executing cluster (B) signs `evidence_token` (a JWT, issuer = executing
+// cluster) over the fields below; the originating cluster (A) verifies that
+// signature against B's published JWKS and checks the bindings (result hash,
+// governance jti, originating cluster) to confirm B ran exactly the task A
+// authorized — and nothing else was substituted.
+message ExecutionEvidence {
+  string task_id                 = 1;
+  string executing_cluster_id    = 2;   // cluster that actually ran the task (B)
+  string originating_cluster_id  = 3;   // cluster that authorized it (A)
+  string worker_id               = 4;   // worker in B's fleet that executed
+  aeos.core.v1.TaskStatus status = 5;
+
+  // SHA-256 (hex) of the canonical serialized TaskResult; binds the signature
+  // to this exact result so a result cannot be swapped after signing.
+  string result_hash = 6;
+
+  // jti of the governance token A minted for this task (echoed, not re-signed),
+  // so A can confirm B executed the task under A's own authorization.
+  string governance_jti = 7;
+
+  google.protobuf.Timestamp started_at   = 8;
+  google.protobuf.Timestamp completed_at = 9;
+
+  // Signed evidence JWT (ES256/RS256), issued by the executing cluster's key.
+  string evidence_token = 10;
+}
+
+// Poll the executing cluster for the result of a previously dispatched task.
+message GetFederatedTaskResultRequest {
+  string remote_task_id          = 1;   // ID returned by DispatchFederatedTask
+  string originating_cluster_id  = 2;
+  string federation_session_token = 3;  // same session gate as dispatch
+}
+
+message FederatedTaskResultResponse {
+  string task_id        = 1;
+  string remote_task_id = 2;
+
+  // false → the task is still executing; result/evidence are unset.
+  bool ready = 3;
+
+  aeos.core.v1.TaskResult result   = 4;
+  ExecutionEvidence       evidence = 5;
+}
+
 // ── Federation Service ─────────────────────────────────────────────────────
 
 service FederationService {
@@ -125,6 +173,9 @@ service FederationService {
 
   // Dispatch a task from the calling cluster to this cluster for execution.
   rpc DispatchFederatedTask(FederatedTaskRequest) returns (FederatedTaskResponse);
+
+  // Fetch the signed result + execution evidence of a dispatched federated task.
+  rpc GetFederatedTaskResult(GetFederatedTaskResultRequest) returns (FederatedTaskResultResponse);
 
   // Query this cluster's available capacity (for federated scheduling decisions).
   rpc GetRemoteCapabilities(GetRemoteCapabilitiesRequest) returns (RemoteCapabilitySummary);

@@ -24,6 +24,17 @@ Files in this directory:
 
 Source of truth: proto/ directory in repository root.
 Governance:      .github/workflows/proto-governance.yml (buf lint + buf breaking)
+Regenerate locally with: make proto-gen  (python -m grpc_tools.protoc, see Makefile)
 """
-# This file is intentionally empty — the generated modules are imported
-# directly by consumers (e.g., from app.distributed.grpc.generated.aeos.core.v1 import task_pb2)
+# The generated *_pb2_grpc modules cross-import as `from aeos.core.v1 import
+# task_pb2` — protoc roots import paths at the proto source root, not the Python
+# package. Insert this directory on sys.path so `aeos.*` resolves as a top-level
+# package. Importing this package once makes every stub usable:
+#     import app.distributed.grpc.generated  # noqa: F401  (runs this shim)
+#     from aeos.core.v1 import task_pb2, task_pb2_grpc
+import os as _os
+import sys as _sys
+
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+if _HERE not in _sys.path:
+    _sys.path.insert(0, _HERE)

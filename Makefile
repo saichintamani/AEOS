@@ -156,6 +156,20 @@ proto-gen:
 	@echo "Stubs generated in app/distributed/grpc/generated/"
 	@echo "Do NOT commit generated files — they are rebuilt in CI."
 
+# Generate Python gRPC stubs WITHOUT buf (offline; uses grpcio-tools).
+# Mirrors what CI's buf generate produces. Requires: pip install grpcio-tools.
+GEN_OUT := app/distributed/grpc/generated
+proto-gen-local:
+	python -m grpc_tools.protoc -I proto \
+	  --python_out=$(GEN_OUT) --grpc_python_out=$(GEN_OUT) \
+	  proto/aeos/core/v1/task.proto \
+	  proto/aeos/core/v1/worker.proto \
+	  proto/aeos/governance/v1/governance.proto \
+	  proto/aeos/federation/v1/federation.proto \
+	  proto/aeos/observability/v1/observability.proto
+	@find $(GEN_OUT)/aeos -type d -exec touch {}/__init__.py \;
+	@echo "Stubs generated offline in $(GEN_OUT)/ (aeos.* rooted; import via the package shim)."
+
 # Run all proto checks (lint + format + build) — mirrors CI proto-governance
 proto-check: proto-lint proto-format-check proto-build
 	@echo ""

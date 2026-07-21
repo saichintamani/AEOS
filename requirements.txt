@@ -15,6 +15,13 @@ anyio==4.7.0
 # ── HTTP client ───────────────────────────────────────────────────────────────
 httpx==0.28.0
 
+# ── CLI (`aeos` command entrypoint: aeos.cli.main) ────────────────────────────
+typer[all]==0.15.1
+rich==13.9.4
+
+# ── Workflow DSL / examples (aeos.workflow.compiler reads YAML) ────────────────
+PyYAML==6.0.2
+
 # ── RAG Engine ────────────────────────────────────────────────────────────────
 sentence-transformers==3.3.1
 chromadb==0.5.23

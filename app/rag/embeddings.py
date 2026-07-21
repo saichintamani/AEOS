@@ -111,7 +111,23 @@ class SentenceTransformerEmbeddings(EmbeddingService):
         )
         try:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_name)
+            # Offline-first: if the model is already cached locally, load it
+            # without touching the network. A cold SentenceTransformer(name)
+            # performs a blocking HuggingFace HEAD request that, on a restricted
+            # or first-boot network, stalls ~80s in connection-reset retries
+            # before falling back to the cache. Trying local-files-only first
+            # keeps the common (cached) startup path fully offline and instant;
+            # we only reach the downloading load when the model isn't cached yet.
+            try:
+                self._model = SentenceTransformer(
+                    self._model_name, local_files_only=True
+                )
+            except Exception:
+                log.info(
+                    "Embedding model not cached; downloading once",
+                    extra={"ctx_model": self._model_name},
+                )
+                self._model = SentenceTransformer(self._model_name)
             probe = self._model.encode(["probe"], convert_to_numpy=True)
             self._dimension = int(probe.shape[1])
             log.info(

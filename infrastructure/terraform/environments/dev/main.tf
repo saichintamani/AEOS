@@ -14,8 +14,12 @@ terraform {
     }
   }
 
+  # Partial backend config. `bucket` is intentionally omitted: an S3 backend
+  # cannot interpolate variables, so a hardcoded account-scoped name is a deploy
+  # trap. Supply the real bucket at init time:
+  #   terraform init -backend-config="bucket=aeos-tfstate-<ACCOUNT_ID>"
+  # See infrastructure/README.md → "Bootstrap Terraform remote state".
   backend "s3" {
-    bucket         = "aeos-tfstate-DEV_ACCOUNT_ID"
     key            = "dev/terraform.tfstate"
     region         = "us-east-1"
     encrypt        = true
@@ -108,13 +112,15 @@ module "ecr" {
 module "elasticache" {
   source = "../../modules/elasticache"
 
-  name               = local.prefix
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.intra_subnet_ids
-  node_type          = "cache.t4g.micro"
-  num_cache_clusters = 1   # No replica in dev
-  auth_token         = var.redis_auth_token
-  tags               = local.tags
+  name                       = local.prefix
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = module.vpc.intra_subnet_ids
+  node_type                  = "cache.t4g.micro"
+  num_node_groups            = 1   # single shard in dev
+  replicas_per_node_group    = 1   # 1 replica (module/cluster-mode minimum for HA + Multi-AZ)
+  allowed_security_group_ids = [module.eks.node_security_group_id]
+  auth_token                 = var.redis_auth_token
+  tags                       = local.tags
 }
 
 ## ─── RDS (single-AZ, no deletion protection) ─────────────────────────────
@@ -122,16 +128,17 @@ module "elasticache" {
 module "rds" {
   source = "../../modules/rds"
 
-  name                = local.prefix
-  vpc_id              = module.vpc.vpc_id
-  subnet_ids          = module.vpc.intra_subnet_ids
-  instance_class      = "db.t4g.medium"
-  master_password     = var.db_password
-  multi_az            = false
-  deletion_protection = false
-  backup_retention_days = 3
-  create_replica      = false
-  tags                = local.tags
+  name                       = local.prefix
+  vpc_id                     = module.vpc.vpc_id
+  subnet_ids                 = module.vpc.intra_subnet_ids
+  instance_class             = "db.t4g.medium"
+  master_password            = var.db_password
+  allowed_security_group_ids = [module.eks.node_security_group_id]
+  multi_az                   = false
+  deletion_protection        = false
+  backup_retention_days      = 3
+  create_replica             = false
+  tags                       = local.tags
 }
 
 ## ─── S3 ───────────────────────────────────────────────────────────────────
