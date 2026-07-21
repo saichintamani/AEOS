@@ -27,6 +27,12 @@ import re
 import sys
 from collections import OrderedDict
 
+# Windows consoles default to cp1252; force UTF-8 so status glyphs don't crash.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
 # "... is not authorized to perform: eks:CreateCluster on resource: ..."
 RE_IAM_DENY = re.compile(
     r"is not authorized to perform:?\s*([a-zA-Z0-9]+:[A-Za-z0-9*]+)"
