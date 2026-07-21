@@ -24,7 +24,7 @@
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:AEOS/*:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:saichintamani/AEOS:ref:refs/heads/main"
         }
       }
     }

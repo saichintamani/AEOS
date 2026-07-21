@@ -1,0 +1,111 @@
+# Milestone 14.2 — First Real `terraform apply` (Runbook + Capture Harness)
+
+**Status:** ⏳ NOT STARTED. This is the runbook; the apply itself is an interactive,
+credentialed, **billable** action you run — it is not automated here.
+
+**Goal:** create the AEOS dev infrastructure for real, assuming the scoped
+`aeos-deploy` role (never root), and **capture every failure** (IAM denial, quota,
+limit, backend) so the deploy policy can be hardened against reality. On a first
+apply the *findings are the deliverable* — a green run is a bonus.
+
+> ⚠️ **Cost + reversibility.** This plan creates an EKS cluster, an RDS instance,
+> 3 NAT gateways, and an ElastiCache replication group — real hourly charges that
+> continue until `terraform destroy`. Do this deliberately, in a window where you
+> can tear down afterward if it's just a validation pass.
+
+---
+
+## Prerequisites (one-time, interactive — you do these)
+
+### P1. Create the state backend (if not already present)
+The plan ran with `-backend=false`; a real apply needs remote state.
+```bash
+aws s3api create-bucket --bucket aeos-tfstate-660249531916 --region us-east-1
+aws s3api put-bucket-versioning --bucket aeos-tfstate-660249531916 \
+  --versioning-configuration Status=Enabled
+aws dynamodb create-table --table-name aeos-tflock \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST --region us-east-1
+```
+
+### P2. Create the deploy principal (moves off root — Milestone 14.1 artifacts)
+From an admin session (this is the *last* thing you do as admin/root):
+```bash
+cd infrastructure/aws/iam
+aws iam create-policy --policy-name aeos-deploy \
+  --policy-document file://aeos-deploy-permissions.json
+aws iam create-role   --role-name aeos-deploy \
+  --assume-role-policy-document file://aeos-deploy-trust.json
+aws iam attach-role-policy --role-name aeos-deploy \
+  --policy-arn arn:aws:iam::660249531916:policy/aeos-deploy
+# The dedicated assumer (trust policy references it):
+aws iam create-user --user-name aeos-deployer
+# ...then enable MFA on aeos-deployer (console or CLI) — the trust policy
+#    requires aws:MultiFactorAuthPresent=true.
+```
+
+### P3. (Optional) GitHub OIDC for CI deploys
+The trust policy already allows `repo:saichintamani/AEOS:ref:refs/heads/main` via
+`token.actions.githubusercontent.com`. To use it, create the OIDC provider once:
+```bash
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list <current GitHub Actions thumbprint>
+```
+Not required for a manual local apply — skip for the first run.
+
+---
+
+## The apply loop (iterate until zero findings)
+
+```powershell
+cd "D:\My projects\AEOS\infrastructure\terraform\environments\dev"
+
+# Stable secrets for the real apply (do NOT let these rotate between retries):
+$env:TF_VAR_db_password      = "<24+ char, RDS-compliant>"
+$env:TF_VAR_redis_auth_token = "<32+ char, Redis-compliant>"
+
+powershell -ExecutionPolicy Bypass -File .\run-apply.ps1
+```
+
+`run-apply.ps1` does: assume `aeos-deploy` → `sts get-caller-identity` →
+`init` the S3 backend → `terraform apply` tee'd to `apply-<runid>.log` →
+runs the capture harness automatically.
+
+### Reading the results
+The harness (`scripts/capture_apply_failures.py`) prints, and writes
+`apply-<runid>.report.json`, four finding classes:
+
+| Class | What to do |
+|-------|-----------|
+| **Missing IAM actions** | It names the exact action (`is not authorized to perform: X`). Paste the suggested JSON snippet into the matching `Sid` in `aeos-deploy-permissions.json`. |
+| **EC2 UnauthorizedOperation** | EC2 often hides the action. Use the error-header context to see which resource failed, add the matching `ec2:*`. |
+| **Quota / limits** | Not a policy fix — request a Service Quota increase (e.g. VPCs/region, EIPs, RDS instances) or reduce the plan. |
+| **Backend / state** | Bucket/lock table missing or lock stuck → revisit P1. |
+
+### After each fix
+```bash
+aws iam create-policy-version --policy-arn arn:aws:iam::660249531916:policy/aeos-deploy \
+  --policy-document file://../../../aws/iam/aeos-deploy-permissions.json --set-as-default
+```
+Then re-run `run-apply.ps1`. Terraform is idempotent — it resumes from partial
+state and only creates what's missing. Repeat until the report shows
+**0 actionable findings** and `terraform apply` exits 0.
+
+---
+
+## Definition of done for 14.2
+- [ ] `terraform apply` exits 0; `terraform show` lists the 112 resources as created.
+- [ ] `aeos-deploy-permissions.json` reflects the **real** action set (every addition
+      traceable to a captured denial), committed with the apply report as evidence.
+- [ ] All quota increases that were needed are documented.
+- [ ] Evidence doc 043 written: what the first apply actually surfaced.
+- [ ] (If validation-only) `terraform destroy` run and confirmed clean.
+
+## Honesty boundary
+- Nothing in this file has been executed against AWS. No principal, bucket, table,
+  or infrastructure has been created.
+- The deploy policy (14.1) is derived from resource *types*, not observed denials —
+  **this milestone is exactly where that guess gets corrected.** Expect 1–3 iterations.
