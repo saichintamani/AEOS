@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowDedicatedDeployUser",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::660249531916:user/aeos-deployer"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "Bool": { "aws:MultiFactorAuthPresent": "true" }
+      }
+    },
+    {
+      "Sid": "AllowCiOidcPrincipal",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::660249531916:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:AEOS/*:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
